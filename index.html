@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0C1626">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Finance Vault">
+  <title>Finance Vault</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="row">
+      <button id="back" class="link" hidden>‹ Zurück</button>
+      <div class="brand grow">FINANCE VAULT</div>
+      <button id="refresh" class="link" title="Kurse aktualisieren">↻</button>
+      <a href="#/ziele" class="link" title="Ziele">◎</a>
+    </div>
+    <h1 id="title" class="serif"></h1>
+    <div id="sub" class="sub"></div>
+  </header>
+
+  <main id="view"></main>
+
+  <nav class="tabbar">
+    <a href="#/"><i>◆</i>Übersicht</a>
+    <a href="#/invest"><i>▲</i>Invest</a>
+    <a href="#/steuern"><i>§</i>Steuern</a>
+    <a href="#/rechnungen"><i>≡</i>Rechnungen</a>
+    <a href="#/vault"><i>⬢</i>Vault</a>
+  </nav>
+
+  <div id="sheet-bg"></div>
+  <section id="sheet" role="dialog" aria-modal="true">
+    <div class="sheet-head"><button id="sheet-back" class="link">Schliessen</button><b id="sheet-title" class="serif"></b><span></span></div>
+    <div id="sheet-body"></div>
+  </section>
+
+  <div id="lock" hidden></div>
+  <div id="toast"></div>
+  <div id="print"></div>
+  <noscript>Bitte JavaScript aktivieren.</noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
