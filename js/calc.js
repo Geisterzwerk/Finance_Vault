@@ -62,7 +62,11 @@ export function holdings(until = null) {
       case 'sell': {
         if (amt > x.qty + 1e-8) x.negative = true;
         const q = Math.min(amt, x.qty);
-        if (x.unknownQty > EPS || chf == null) {
+        const short = amt - q; // mehr verkauft als bekannt -> Teil ohne Kaufhistorie
+        if (short > 1e-8) x.realizedUnknown = true;
+        if (q <= EPS) { x.sold += amt; if (chf == null) x.missingChf++; break; }
+        const proceeds = chf == null ? null : (chf - fee) * (q / amt);
+        if (x.unknownQty > EPS || proceeds == null) {
           // Kostenbasis teilweise unbekannt: kein Gewinn berechnen, anteilig ausbuchen
           x.realizedUnknown = true;
           const share = x.qty > EPS ? q / x.qty : 0;
@@ -70,7 +74,7 @@ export function holdings(until = null) {
           if (chf == null) x.missingChf++;
         } else {
           const costOut = x.qty > EPS ? (x.cost / x.qty) * q : 0;
-          x.realized += (chf - fee) - costOut;
+          x.realized += proceeds - costOut;
           x.cost -= costOut;
         }
         x.fees += fee; x.qty -= q; x.sold += amt;

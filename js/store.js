@@ -14,7 +14,8 @@ export const emptyState = () => ({
   imports: {},        // Plattform -> { last, count, mapping }
   raw: {},
   documents: [],      // Dokumente (Scans, PDFs, Steuererklärung, Veranlagung)
-  ledger: { addresses: [], last: null },            // Rohdaten von Konto-Auszügen (z. B. BingX), für Neuberechnung
+  ledger: { addresses: [], last: null },
+  server: { url: '', token: '', lastSync: null, lastReminders: '', push: false, status: null },            // Rohdaten von Konto-Auszügen (z. B. BingX), für Neuberechnung
   coins: {},          // Symbol -> { id (CoinGecko), name, location }
   prices: {},         // Symbol -> { chf, change24h, at }
   pricesAt: null,

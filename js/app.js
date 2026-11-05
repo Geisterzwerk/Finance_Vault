@@ -4,6 +4,7 @@
 import { isSetUp, setup, unlock, lock, isUnlocked } from './vault.js';
 import { S, setState, emptyState, defaultGoals, commit, onChange, flush } from './store.js';
 import { holdings, checkMilestones } from './calc.js';
+import * as SRV from './server.js';
 import { refreshPrices } from './prices.js';
 import { $, toast, closeAll, refreshSheet, sheetOpen, closeSheet } from './ui.js';
 import { dashboard, invest, goals, celebrate } from './views-main.js';
@@ -76,7 +77,11 @@ function start() {
   render();
   if (!started) { started = true; setInterval(() => { if (isUnlocked() && !document.hidden) updatePrices(); }, 5 * 60e3); }
   updatePrices();
+  SRV.syncAll();
 }
+// Erinnerungen nach Änderungen (z. B. neue Rechnung) automatisch an den Server
+let srvTimer;
+onChange(() => { clearTimeout(srvTimer); srvTimer = setTimeout(() => { if (isUnlocked() && SRV.isConfigured()) SRV.syncReminders().catch(() => {}); }, 4000); });
 
 // ---------- Automatisch sperren ----------
 let hiddenAt = null;
@@ -84,7 +89,7 @@ document.addEventListener('visibilitychange', async () => {
   if (!isUnlocked()) return;
   if (document.hidden) { hiddenAt = Date.now(); await flush().catch(() => {}); }
   else if (hiddenAt && Date.now() - hiddenAt > (S().settings.autoLockMin || 5) * 60e3) { lock(); closeAll(); $('#view').innerHTML = ''; showLock(); }
-  else updatePrices();
+  else { updatePrices(); SRV.syncAll(); }
 });
 addEventListener('online', () => isUnlocked() && updatePrices());
 
@@ -104,3 +109,11 @@ $('#sub').addEventListener('click', (e) => { const yb = e.target.closest('[data-
 
 showLock();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+
+// iPhone: nach dem Schliessen der Tastatur die Ansicht zurücksetzen
+document.addEventListener('focusout', () => {
+  setTimeout(() => window.scrollTo(window.scrollX, window.scrollY), 60);
+});
+window.visualViewport?.addEventListener('resize', () => {
+  if (window.visualViewport.height >= window.innerHeight - 1) window.scrollTo(window.scrollX, window.scrollY);
+});

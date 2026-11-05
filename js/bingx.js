@@ -199,6 +199,13 @@ const fmt = (v) => String(+Number(v).toFixed(8));
 export function apply(result) {
   const s = S();
   const decided = new Map(s.transactions.filter((t) => t.decided && String(t.extId).startsWith('bingx:')).map((t) => [t.extId, t]));
-  s.transactions = s.transactions.filter((t) => !String(t.extId || '').startsWith('bingx:'));
+  const cut = result.to ? new Date(String(result.to).replace(' ', 'T')).getTime() : 0;
+  // Statement ersetzt alle bisherigen Auszug-Buchungen und API-Trades bis zum Auszugsende
+  s.transactions = s.transactions.filter((t) => {
+    const id = String(t.extId || '');
+    if (id.startsWith('bingx:')) return false;
+    if (id.startsWith('bingxapi:') && new Date(t.date).getTime() <= cut) return false;
+    return true;
+  });
   for (const t of result.txs) s.transactions.push(decided.has(t.extId) ? { ...decided.get(t.extId), seq: t.seq } : t);
 }

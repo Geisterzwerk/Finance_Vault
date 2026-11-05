@@ -37,7 +37,7 @@ Rechtsklick auf `index.html` → **Open with Live Server** (oder `python -m http
 ```powershell
 git init
 git add .
-git commit -m "Finance Vault v2.0"
+git commit -m "Finance Vault v2.1"
 git branch -M main
 git remote add origin https://github.com/Geisterzwerk/finance-vault.git
 git push -u origin main
@@ -98,4 +98,4 @@ Bestand per 31.12., 23:59 Uhr. Steuerkurse aus der ESTV-Kursliste (ICTax) eintra
 | 2 Dokumente | Scanner, QR-Rechnung, OCR, Finance Inbox, Kalender-Erinnerungen | ✅ |
 | 3 Steuern | Jahresabschluss, Steuerpaket, Steuerzahlungen, Archiv | ✅ |
 | 4 Automatik | Ledger-Abgleich, Prüfung Steuererklärung | ✅ |
-| offen | Echte Push-Mitteilungen (braucht Server), BingX-API (braucht Server wegen CORS) | später |
+| 5 Server | Eigener Server (Docker, Tailscale): Push-Mitteilungen, BingX-API-Trades | ✅ siehe `finance-vault-server/ANLEITUNG.md` |

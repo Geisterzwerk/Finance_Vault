@@ -14,6 +14,7 @@ import {
 import { TAX_TOTAL, openTx } from './views-main.js';
 import { inboxPage, documentsPage, ledgerPage, openScanner, taxExtrasHTML, bindTaxExtras } from './views-docs.js';
 import { remindersICS, TAX_KINDS } from './taxpack.js';
+import * as SRV from './server.js';
 
 export const ui = { taxYear: new Date().getMonth() < 6 ? new Date().getFullYear() - 1 : new Date().getFullYear(), invSearch: '' };
 
@@ -425,6 +426,38 @@ function reviewPage() {
   };
 }
 
+// ---------- Server ----------
+function serverCard() {
+  const c = S().server || {};
+  if (!c.token) return `<div class="card small mut">Verbinde deinen Server für Push-Mitteilungen und automatische BingX-Trades. Adresse und Kopplungscode findest du auf dem Server (siehe Anleitung).</div>
+    <label class="field"><span>Server-Adresse</span><input name="srvurl" placeholder="https://server.tailxxxx.ts.net" autocapitalize="off" autocomplete="off" value="${esc(c.url || '')}"></label>
+    <label class="field"><span>Kopplungscode</span><input name="srvcode" autocapitalize="characters" autocomplete="off" placeholder="z. B. DW3QUJQW"></label>
+    <button class="btn gold block" data-act="srvpair">Server verbinden</button>`;
+  return `<div class="card"><div class="row">${c.status && !c.status.ok ? icon('warn') : icon('ok')}<div class="grow"><b>${esc(c.url.replace('https://', ''))}</b>
+      <div class="small ${c.status && !c.status.ok ? 'amber' : 'mut'}">${c.status ? esc(c.status.msg) : 'gekoppelt'} · Abgleich ${c.lastSync ? ago(c.lastSync) : 'noch nie'}</div>
+      <div class="small mut">Mitteilungen: ${c.push ? 'aktiv' : 'aus'} · BingX: ${c.bingx ? (c.bingxLast ? 'Server-Sync ' + ago(new Date(c.bingxLast)) : 'konfiguriert') : 'kein API-Schlüssel'}</div></div></div></div>
+    <div class="grid2"><button class="btn ${c.push ? 'line' : 'gold'}" data-act="srvpush">${c.push ? 'Push erneuern' : '🔔 Mitteilungen aktivieren'}</button><button class="btn line" data-act="srvtest">Test-Mitteilung</button></div>
+    <div class="grid2"><button class="btn line" data-act="srvsync">↻ Jetzt abgleichen</button><button class="btn line" data-act="srvbx">BingX neu abfragen</button></div>
+    <button class="btn danger block" data-act="srvoff">Server trennen</button>`;
+}
+async function serverAction(a, el, b) {
+  const busy = (t) => { if (b) { b.disabled = true; b.textContent = t; } };
+  try {
+    if (a === 'srvpair') {
+      busy('Verbinde …');
+      const h = await SRV.pair(el.querySelector('[name=srvurl]').value, el.querySelector('[name=srvcode]').value.trim().toUpperCase());
+      toast('Server verbunden' + (h.bingx ? ' · BingX aktiv' : ''));
+      await SRV.syncAll({ quiet: true });
+    }
+    if (a === 'srvpush') { busy('Aktiviere …'); await SRV.enablePush(); await SRV.syncReminders(true); toast('Mitteilungen aktiv'); }
+    if (a === 'srvtest') { busy('Sende …'); const r = await SRV.testPush(); toast(r.ok ? 'Test gesendet – kommt gleich' : 'Kein Gerät registriert – zuerst Mitteilungen aktivieren'); }
+    if (a === 'srvsync') { busy('Gleiche ab …'); const r = await SRV.syncAll({ quiet: false }); toast(r && r.bx && r.bx.added ? `${r.bx.added} neue BingX-Trades` : 'Abgeglichen'); }
+    if (a === 'srvbx') { busy('Frage BingX ab …'); const r = await SRV.triggerBingx(); await SRV.syncBingx(); toast(r.ok ? `BingX: ${r.new} neue Trades` : 'BingX: ' + (r.error || 'Fehler')); }
+    if (a === 'srvoff' && confirm('Verbindung zum Server trennen?')) { SRV.unpair(); toast('Getrennt'); }
+  } catch (e) { toast(e.message, 4000); }
+  commit();
+}
+
 // ---------- Einstellungen ----------
 function settingsPage() {
   const s = S().settings;
@@ -438,7 +471,9 @@ function settingsPage() {
     <div class="lbl mt">Backup</div>
     <div class="card small mut">Das Backup bleibt verschlüsselt und ist nur mit deinem PIN lesbar. Ohne Backup sind die Daten bei Verlust des iPhones weg.</div>
     <div class="grid2"><button class="btn gold" data-act="backup">⬇ Backup exportieren</button><label class="btn line">⬆ Backup laden<input type="file" data-act="restore" accept=".json,application/json" hidden></label></div>
-    <div class="lbl mt">Erinnerungen</div>
+    <div class="lbl mt">Eigener Server (Tailscale)</div>
+    ${serverCard()}
+    <div class="lbl mt">Erinnerungen ohne Server</div>
     <div class="card small mut">Übernimmt Jahresabschluss (31.12.), Monats-Update, Steuerdokumente (Januar) und alle offenen Rechnungen mit Alarm in den iPhone-Kalender. Funktioniert auch, wenn die App geschlossen ist. Nach neuen Rechnungen erneut tippen.</div>
     <button class="btn line block" data-act="ics">📅 Erinnerungen in Kalender übernehmen</button>
     <div class="lbl mt">Sicherheit</div>
@@ -446,7 +481,7 @@ function settingsPage() {
     <div class="lbl mt">Daten</div>
     <div class="grid2"><button class="btn line" data-act="demo">Demo-Daten laden</button><button class="btn line" data-act="goals">Standard-Ziele</button></div>
     <button class="btn danger block mt" data-act="wipe">Alles löschen</button>
-    <div class="small mut center mt">Finance Vault v2.0 · ${S().transactions.length} Transaktionen · ${S().invoices.length} Rechnungen</div>`,
+    <div class="small mut center mt">Finance Vault v2.1 · ${S().transactions.length} Transaktionen · ${S().invoices.length} Rechnungen</div>`,
     bind: (el) => {
       el.querySelectorAll('[data-set]').forEach((i) => i.addEventListener('change', () => { s[i.dataset.set] = i.type === 'number' ? Number(i.value) || 5 : i.value.trim(); commit(); toast('Gespeichert'); }));
       el.querySelector('[data-act=restore]').addEventListener('change', async (e) => {
@@ -458,6 +493,7 @@ function settingsPage() {
         const b = e.target.closest('button[data-act]'); if (!b) return;
         const a = b.dataset.act;
         if (a === 'backup') { await flush(); download(`FinanceVault_Backup_${isoDay(new Date())}.json`, await exportBackup()); }
+        if (a.startsWith('srv')) return serverAction(a, el, b);
         if (a === 'ics') download('FinanceVault_Erinnerungen.ics', remindersICS(), 'text/calendar');
         if (a === 'lock') { await flush(); lock(); location.reload(); }
         if (a === 'pin') {

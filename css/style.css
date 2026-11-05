@@ -144,3 +144,7 @@ details summary { cursor: pointer; color: var(--gold); font-weight: 600; }
   .pr td { padding: 6px; border-bottom: 1px solid #ddd; } .pr .r { text-align: right; }
   .pr tfoot td { border-top: 2px solid #0C1626; } .pr .small { font-size: 8pt; color: #666; }
 }
+/* iPhone: kein Gummiband-Scrollen, das die Ansicht verschiebt */
+html, body { overscroll-behavior: none; }
+html { height: 100%; }
+body { min-height: 100%; }
