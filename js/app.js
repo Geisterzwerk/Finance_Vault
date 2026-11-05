@@ -125,3 +125,9 @@ window.visualViewport?.addEventListener('resize', () => {
   if (window.visualViewport.height >= window.innerHeight - 1) window.scrollTo(window.scrollX, window.scrollY);
 });
 window.visualViewport?.addEventListener('resize', () => window.scrollTo(0, 0));
+// Auswahlknöpfe (Chips) überall anklickbar machen
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('[data-chips] .chip');
+  if (!c) return;
+  c.closest('[data-chips]').querySelectorAll('.chip').forEach((x) => x.classList.toggle('sel', x === c));
+});
