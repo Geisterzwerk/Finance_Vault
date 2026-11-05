@@ -37,7 +37,7 @@ Rechtsklick auf `index.html` → **Open with Live Server** (oder `python -m http
 ```powershell
 git init
 git add .
-git commit -m "Finance Vault v1.1"
+git commit -m "Finance Vault v2.0"
 git branch -M main
 git remote add origin https://github.com/Geisterzwerk/finance-vault.git
 git push -u origin main
@@ -68,12 +68,34 @@ Durchschnittskosten-Methode. Kauf erhöht Bestand und Kostenbasis (inkl. Gebühr
 
 Bestand per 31.12., 23:59 Uhr. Steuerkurse aus der ESTV-Kursliste (ICTax) eintragen oder Ersatzkurse laden. «Jahr abschliessen» friert den Snapshot ein. Bericht als PDF oder CSV. Organisationshilfe, keine Steuerberatung.
 
+## Dokumente, Scanner, Inbox (Phase 2)
+
+- **Vault › Dokument scannen:** Foto aufnehmen → Ecken werden geschätzt und lassen sich ziehen → Perspektive korrigiert → Kontrast (Dokument, S/W, Farbe) → mehrere Seiten → PDF.
+- **QR-Rechnung:** Empfänger, IBAN, Referenz und Betrag direkt aus dem Swiss-QR-Code.
+- **Texterkennung (OCR, Deutsch):** Betrag, Datum, Fälligkeit, Rechnungsnummer, Absender. Vorschlag für Kategorie, Steuerrelevanz und E-Tax-Ziffer.
+- **Finance Inbox:** «Später» legt Scans zum Prüfen ab. Dokumente werden verschlüsselt nach Jahr abgelegt, Suche auch im erkannten Text.
+- OCR, QR und PDF-Lesen laufen **auf dem Gerät**. Die Bibliotheken (tesseract.js, jsQR, pdf.js) werden beim ersten Gebrauch aus dem Internet geladen und danach offline gecacht. Deine Dokumente verlassen das Gerät nie.
+- **Erinnerungen:** Vault › Einstellungen › «Erinnerungen in Kalender übernehmen» erzeugt Kalendertermine mit Alarm (31.12., 2.1., Januar-Dokumente, monatliches Update, alle offenen Rechnungen). Diese melden sich auch bei geschlossener App.
+
+## Steuern (Phase 3)
+
+- **Jahresabschluss:** Vom 31.12. bis Ende März erscheint er auf der Übersicht. Datencheck pro Quelle (BingX, Relai, Konten, Ledger, Zuordnungen, Steuerkurse) mit Sprung zum Aktualisieren. Erst wenn alles grün ist: Snapshot 31.12., 23:59 Uhr einfrieren.
+- **Steuerpaket (ZIP):** Übersicht «Was muss ich wo eintragen?» (HTML), Crypto-Steuerbericht (CSV), alle steuerrelevanten Belege nach Ordnern, Steuererklärung und Veranlagung.
+- **Steuerzahlungen:** Rechnungen mit Kategorie «Steuern», Steuerart (Staat BL, Gemeinde, Bund) und Steuerjahr → Soll, bezahlt, offen.
+- **Archiv:** Eingereichte Erklärung und Veranlagung pro Jahr; abgeschlossene Jahre bleiben erhalten. Checklisten-Punkte aus dem Vorjahr werden markiert.
+
+## Automatik und Prüfung (Phase 4)
+
+- **Ledger-Abgleich:** öffentliche Adressen für BTC, ETH (+LINK, ONDO), AVAX, SOL, XRP, SUI, NEAR, KAS, SEI. Vergleich App-Bestand mit Ledger + Rest auf BingX, Ausgleich auf Knopfdruck. Bei Bitcoin alle verwendeten Adressen eintragen (xpub wird nicht unterstützt). Die Endpunkte sind öffentlich und konnten hier nicht live getestet werden.
+- **Prüfung der Steuererklärung:** PDF aus E-Tax BL hochladen → Finance Vault sucht Coins, Beträge, Abzüge und Konten im Text und zeigt eine Ampel. Keine Garantie, sondern Hinweise.
+
 ## Stand
 
 | Phase | Inhalt | Stand |
 |---|---|---|
 | 1 Fundament | PIN, Verschlüsselung, Konten, Import, Duplikate, Ø-Preis, Live-Kurse, Dashboard, Ziele | ✅ |
 | Extra | BingX-Kontoauszug mit Saldo-Abgleich, Rechnungen, Crypto-Steuerbericht | ✅ |
-| 2 Dokumente | Scanner, OCR, Finance Inbox, Push-Erinnerungen | offen |
-| 3 Steuern | Jahresabschluss mit Push, Steuerpaket, Steuerzahlungen, Archiv | offen |
-| 4 Automatik | Ledger-Sync, Prüfung Steuererklärung, BingX-API | offen |
+| 2 Dokumente | Scanner, QR-Rechnung, OCR, Finance Inbox, Kalender-Erinnerungen | ✅ |
+| 3 Steuern | Jahresabschluss, Steuerpaket, Steuerzahlungen, Archiv | ✅ |
+| 4 Automatik | Ledger-Abgleich, Prüfung Steuererklärung | ✅ |
+| offen | Echte Push-Mitteilungen (braucht Server), BingX-API (braucht Server wegen CORS) | später |

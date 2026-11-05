@@ -107,6 +107,10 @@ export async function getFileURL(id) {
   return f ? URL.createObjectURL(new Blob([f.bytes], { type: f.type })) : null;
 }
 export const deleteFile = (id) => idbDel('file:' + id);
+export async function getFileBytes(id) {
+  const f = await readFileRaw('file:' + id);
+  return f ? { bytes: new Uint8Array(f.bytes), type: f.type, name: f.name } : null;
+}
 
 // ---------- Backup (bleibt verschlüsselt, nur mit PIN lesbar) ----------
 export async function exportBackup() {

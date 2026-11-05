@@ -4,6 +4,7 @@
 import { S, commit, uid } from './store.js';
 import { TYPES, ACCOUNT_KINDS, portfolio, netWorth, holdings, goalProgress, reviewCount } from './calc.js';
 import { coinId } from './prices.js';
+import { closingDue } from './taxpack.js';
 import {
   esc, chf, qty, price, pct, cls, dmy, dmyShort, hm, ago, daysUntil, greeting, longDate, bar, icon,
   openSheet, closeSheet, toast, chips, chipVal, confetti,
@@ -34,6 +35,8 @@ export function dashboard() {
   const taxDone = Object.values(ck).filter(Boolean).length;
   const live = s.pricesAt && Date.now() - new Date(s.pricesAt) < 15 * 60e3;
   const missing = nw.pf.held.filter((x) => x.quality === 'missing').length;
+  const closing = closingDue();
+  const inboxDocs = (s.documents || []).filter((d) => d.status === 'inbox').length;
   const goalCard = (g, color) => {
     if (!g) return '';
     const p = goalProgress(g, nw);
@@ -62,7 +65,8 @@ export function dashboard() {
       <div class="card clickable" data-go="#/steuern"><div class="lbl">Steuern ${yr}</div><div class="serif big2">${taxDone} / ${TAX_TOTAL}</div>
         ${bar(taxDone / TAX_TOTAL, 'green')}<div class="small mut">Checkliste</div></div>
     </div>
-    ${rc ? `<div class="card clickable row" data-go="#/vault/pruefen">${icon('warn')}<div class="grow"><b>Finance Inbox</b><div class="small mut">${rc} Transaktion${rc > 1 ? 'en' : ''} bitte zuordnen</div></div><span class="gold">›</span></div>` : ''}
+    ${closing ? `<div class="card clickable row goldb" data-go="#/steuern">${icon('warn')}<div class="grow"><b>Jahresabschluss ${closing}</b><div class="small mut">Daten prüfen, Bestand per 31.12. einfrieren, Steuerpaket erstellen</div></div><span class="gold">›</span></div>` : ''}
+    ${rc + inboxDocs ? `<div class="card clickable row" data-go="#/vault/inbox">${icon('warn')}<div class="grow"><b>Finance Inbox</b><div class="small mut">${[rc ? rc + ' Transaktion' + (rc > 1 ? 'en' : '') + ' zuordnen' : '', inboxDocs ? inboxDocs + ' Dokument' + (inboxDocs > 1 ? 'e' : '') + ' prüfen' : ''].filter(Boolean).join(' · ')}</div></div><span class="gold">›</span></div>` : ''}
     ${missing ? `<div class="card clickable row" data-go="#/invest">${icon('warn')}<div class="grow"><b>Kaufhistorie unvollständig</b><div class="small mut">Bei ${missing} Coin${missing > 1 ? 's' : ''} fehlt ein Teil der Käufe. Ø-Preis wird nicht erfunden.</div></div><span class="gold">›</span></div>` : ''}
     ${goalCard(g2, 'orange')}
     ${!s.transactions.length && !s.accounts.length ? `<div class="card"><b>Los geht's</b><div class="small mut">Importiere deine BingX- und Relai-Exporte unter Vault, erfasse deine Konten unter Invest, oder lade Demo-Daten unter Vault › Einstellungen.</div>

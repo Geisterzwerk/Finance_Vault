@@ -12,6 +12,8 @@ import {
   toast, download, chips, chipVal, rerender,
 } from './ui.js';
 import { TAX_TOTAL, openTx } from './views-main.js';
+import { inboxPage, documentsPage, ledgerPage, openScanner, taxExtrasHTML, bindTaxExtras } from './views-docs.js';
+import { remindersICS, TAX_KINDS } from './taxpack.js';
 
 export const ui = { taxYear: new Date().getMonth() < 6 ? new Date().getFullYear() - 1 : new Date().getFullYear(), invSearch: '' };
 
@@ -45,10 +47,12 @@ export function taxes() {
   const inv = S().invoices.filter((i) => i.tax !== 'no' && new Date(i.paidAt || i.due).getFullYear() === y);
   const byZ = {}; inv.forEach((i) => { (byZ[i.ziffer || '–'] ||= []).push(i); });
   const groups = [...new Set(CHECKLIST.map((c) => c[3]))];
+  const prev = S().taxYears[y - 1] || {};
   return {
     title: `Steuern ${y}`, sub: `${esc(S().settings.canton)} · E-Tax BL <button class="ybtn" data-y="-1">‹</button><button class="ybtn" data-y="1">›</button>`,
     html: `
     <div class="card hero"><div class="lbl">Vorbereitung</div><div class="row"><div class="serif huge grow">${Math.round((done / TAX_TOTAL) * 100)} %</div><span class="small mut">${done} von ${TAX_TOTAL} erledigt</span></div>${bar(done / TAX_TOTAL)}</div>
+    ${taxExtrasHTML(y)}
     <div class="lbl mt">Crypto-Steuerbericht · Bestand per 31.12.${y}</div>
     <div class="card ${snap ? 'goldb' : ''}">
       <div class="row"><div class="grow"><div class="small mut">Steuerwert Crypto total</div><div class="serif big2">${chf(total)}</div></div>
@@ -65,11 +69,11 @@ export function taxes() {
     </div>
     <div class="lbl mt">Checkliste E-Tax BL</div>
     ${groups.map((g) => `<div class="small mut gl">${g}</div>${CHECKLIST.filter((c) => c[3] === g).map(([k, l, z]) => `
-      <div class="chk clickable" data-chk="${k}">${t.checklist[k] ? icon('ok') : '<span class="ic empty"></span>'}<span class="grow ${t.checklist[k] ? '' : 'b'}">${l}</span><span class="small mut">Ziffer ${z}</span></div>`).join('')}`).join('')}
+      <div class="chk clickable" data-chk="${k}">${t.checklist[k] ? icon('ok') : '<span class="ic empty"></span>'}<span class="grow ${t.checklist[k] ? '' : 'b'}">${l}${!t.checklist[k] && prev.checklist && prev.checklist[k] ? ' <span class="tag">im Vorjahr</span>' : ''}</span><span class="small mut">Ziffer ${z}</span></div>`).join('')}`).join('')}
     <div class="small mut mt">Die Ziffern stammen aus deiner Steuererklärung 2023. Bitte jedes Jahr im E-Tax BL kontrollieren.</div>
     ${inv.length ? `<div class="lbl mt">Steuerrelevante Belege ${y}</div>${Object.entries(byZ).map(([z, list]) => `<div class="card"><div class="row"><b class="grow">Ziffer ${esc(z)}</b><b>${chf(list.reduce((a, i) => a + (+i.amount || 0), 0), 2)}</b></div>
       ${list.map((i) => `<div class="txr clickable" data-inv="${i.id}">${i.tax === 'yes' ? icon('ok') : icon('warn')}<span class="grow small">${esc(i.issuer)} · ${esc(i.title || '')}</span><span class="small">${chf(+i.amount, 2)}</span></div>`).join('')}</div>`).join('')}` : ''}`,
-    bind: (el) => el.addEventListener('click', async (e) => {
+    bind: (el) => { bindTaxExtras(el, y, (yy) => { ui.taxYear = yy; dispatchEvent(new Event('rerender')); scrollTo(0, 0); }); el.addEventListener('click', async (e) => {
       const yb = e.target.closest('[data-y]'); if (yb) { ui.taxYear += +yb.dataset.y; dispatchEvent(new Event('rerender')); return; }
       const c = e.target.closest('[data-chk]'); if (c) { t.checklist[c.dataset.chk] = !t.checklist[c.dataset.chk]; commit(); return; }
       const i = e.target.closest('[data-inv]'); if (i) return openInvoice(S().invoices.find((q) => q.id === i.dataset.inv));
@@ -95,7 +99,7 @@ export function taxes() {
         download(`Crypto_Steuerbericht_${y}.csv`, '\uFEFF' + lines.join('\n'), 'text/csv');
       }
       if (b.dataset.act === 'print') printReport(y, hold, rates, total, !!snap);
-    }),
+    }); },
   };
 }
 
@@ -147,27 +151,28 @@ export function invoices() {
   return {
     title: 'Rechnungen', sub: `${open.length} offen · ${chf(sum, 2)}`,
     html: `<input class="search" data-search placeholder="Suchen: Aussteller, Nummer, Betrag …" value="${esc(ui.invSearch)}">
-      <button class="btn gold block" data-act="add">＋ Rechnung erfassen</button>
+      <div class="grid2"><button class="btn gold" data-act="add">＋ Rechnung</button><button class="btn line" data-act="scan">📷 Scannen</button></div>
       <div class="lbl mt">Offen · ${chf(sum, 2)}</div>${open.map(row).join('') || '<div class="card mut small">Keine offenen Rechnungen</div>'}
       <div class="lbl mt">Bezahlt</div>${paid.map(row).join('') || '<div class="card mut small">Noch keine</div>'}
-      <div class="small mut mt">Push-Erinnerungen folgen in Phase 2. Bis dahin: in der Rechnung «In Kalender» tippen.</div>`,
+      <div class="small mut mt">Erinnerungen: Vault › Einstellungen › «Erinnerungen in Kalender übernehmen» oder in der Rechnung «In Kalender».</div>`,
     bind: (el) => {
       const sI = el.querySelector('[data-search]');
       sI.addEventListener('input', () => { ui.invSearch = sI.value; dispatchEvent(new Event('rerender')); const n = document.querySelector('[data-search]'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); });
       el.addEventListener('click', (e) => {
         const i = e.target.closest('[data-inv]'); if (i) return openInvoice(S().invoices.find((x) => x.id === i.dataset.inv));
         if (e.target.closest('[data-act=add]')) openInvoice();
+        if (e.target.closest('[data-act=scan]')) openScanner();
       });
     },
   };
 }
 
 export function openInvoice(inv = null) {
-  const d = inv ? { ...inv } : { issuer: '', title: '', number: '', amount: '', due: '', category: '', tax: 'no', ziffer: '', status: 'open', paidAt: '', note: '' };
+  const d = inv ? { ...inv } : { issuer: '', title: '', number: '', amount: '', due: '', category: '', tax: 'no', ziffer: '', status: 'open', paidAt: '', note: '', taxKind: '', taxYear: null };
   let newFile = null;
   const capture = (el) => {
     const v = (n) => el.querySelector(`[name=${n}]`)?.value ?? '';
-    Object.assign(d, { issuer: v('issuer'), title: v('title'), number: v('number'), amount: v('amount'), due: v('due'), category: v('category'), ziffer: v('ziffer'), note: v('note'), paidAt: v('paidAt') || d.paidAt, tax: chipVal(el, 'tax') || d.tax });
+    Object.assign(d, { issuer: v('issuer'), title: v('title'), number: v('number'), amount: v('amount'), due: v('due'), category: v('category'), ziffer: v('ziffer'), note: v('note'), paidAt: v('paidAt') || d.paidAt, tax: chipVal(el, 'tax') || d.tax, taxKind: v('taxKind'), taxYear: v('taxYear') ? +v('taxYear') : null });
   };
   openSheet({
     title: inv ? inv.issuer : 'Neue Rechnung', capture,
@@ -187,6 +192,8 @@ export function openInvoice(inv = null) {
       <datalist id="cats">${['Studium', 'Wohnen', 'Versicherung', 'Gesundheit', 'Mobilität', 'Kommunikation', 'Steuern', 'Abos', 'Sonstiges'].map((c) => `<option value="${c}">`).join('')}</datalist>
       <div class="lbl">Steuer</div>${chips('tax', [['no', 'nicht relevant'], ['maybe', 'möglicherweise'], ['yes', 'steuerrelevant']], d.tax)}
       <label class="field"><span>E-Tax-Ziffer (z. B. 650 Weiterbildung, 720 Krankheit)</span><input name="ziffer" value="${esc(d.ziffer)}" inputmode="numeric"></label>
+      <div class="grid2"><label class="field"><span>Steuerart (nur Kategorie Steuern)</span><select name="taxKind"><option value="">–</option>${TAX_KINDS.map((k) => `<option ${k === d.taxKind ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
+        <label class="field"><span>Für Steuerjahr</span><input name="taxYear" inputmode="numeric" value="${esc(d.taxYear || '')}" placeholder="z. B. ${new Date().getFullYear() - 1}"></label></div>
       <label class="field"><span>Notiz</span><input name="note" value="${esc(d.note || '')}"></label>
       <div class="lbl">Beleg (Foto oder PDF)</div>
       <label class="btn line block">📷 ${inv && inv.file ? 'Beleg ersetzen' : 'Foto / PDF hinzufügen'}<input type="file" name="file" accept="image/*,application/pdf" hidden></label>
@@ -212,6 +219,7 @@ export function openInvoice(inv = null) {
         const amount = Number(String(d.amount).replace(/['’]/g, '').replace(',', '.'));
         if (!d.issuer.trim() || !(amount >= 0) || d.amount === '') return toast('Aussteller und Betrag angeben');
         const o = { ...d, issuer: d.issuer.trim(), amount };
+        if (o.category === 'Steuern') { o.taxKind = o.taxKind || 'Staat BL'; o.taxYear = o.taxYear || new Date().getFullYear() - 1; }
         if (newFile) { const fid = uid(); await putFile(fid, newFile); if (inv && inv.file) await deleteFile(inv.file); o.file = fid; o.fileName = newFile.name; }
         if (inv) Object.assign(inv, o); else s.invoices.push({ id: uid(), created: new Date().toISOString(), ...o });
         commit(); toast(o.status === 'paid' ? 'Als bezahlt gespeichert' : 'Gespeichert'); closeSheet();
@@ -233,6 +241,9 @@ function downloadICS(d) {
 // =====================================================================
 export function vault(sub) {
   if (sub === 'pruefen') return reviewPage();
+  if (sub === 'inbox') return inboxPage();
+  if (sub === 'dokumente') return documentsPage();
+  if (sub === 'ledger') return ledgerPage();
   if (sub === 'einstellungen') return settingsPage();
   const s = S();
   const status = (name, maxDays) => {
@@ -245,6 +256,9 @@ export function vault(sub) {
   return {
     title: 'Vault', sub: 'Import-Zentrale · du lieferst Rohdaten, Finance Vault rechnet',
     html: `
+    <button class="btn gold block big" data-act="scan">📷 Dokument scannen / hochladen</button>
+    <div class="grid2"><button class="btn line" data-go="#/vault/inbox">📥 Inbox${s.documents.filter((d) => d.status === 'inbox').length ? ' (' + s.documents.filter((d) => d.status === 'inbox').length + ')' : ''}</button><button class="btn line" data-go="#/vault/dokumente">🗂 Dokumente</button></div>
+    <div class="lbl mt">Import</div>
     ${rc ? `<div class="card row clickable goldb" data-go="#/vault/pruefen">${icon('warn')}<div class="grow"><b>${rc} Transaktion${rc > 1 ? 'en' : ''} zuordnen</b><div class="small mut">Lieber einmal fragen als falsch rechnen</div></div><span class="gold">›</span></div>` : ''}
     <div class="card"><div class="row"><div class="grow"><b class="big1">BingX</b><div class="small mut">Kontoauszüge: Spot_Account.csv + Fund_Account.csv (alle auf einmal wählen)</div></div>
       <label class="btn line sm">Importieren<input type="file" multiple accept=".csv,text/csv,text/plain" data-import="BingX" hidden></label></div>
@@ -256,7 +270,7 @@ export function vault(sub) {
       <div class="small mt">${status('Relai', 35)}</div><div class="small mut">So geht's: Relai › Profil › Transaktionen › Export › CSV. Die Zuordnung wird angepasst, sobald ein Beispiel-Export vorliegt.</div></div>
     ${others.map((n) => `<div class="card row"><div class="grow"><b>${esc(n)}</b><div class="small">${status(n, 60)}</div></div><label class="btn line sm">Importieren<input type="file" accept=".csv,text/csv,text/plain" data-import="${esc(n)}" hidden></label></div>`).join('')}
     <div class="card row"><div class="grow"><b>Andere Plattform</b><div class="small mut">Beliebige CSV mit Spalten-Zuordnung</div></div><label class="btn line sm">CSV wählen<input type="file" accept=".csv,text/csv,text/plain" data-import="" hidden></label></div>
-    <div class="card row"><div class="grow"><b>Ledger</b><div class="small mut">Öffentliche Adressen, automatischer Bestand · Phase 4</div></div><span class="tag">bald</span></div>
+    <div class="card row clickable" data-go="#/vault/ledger"><div class="grow"><b>Ledger</b><div class="small ${s.ledger.last ? 'pos' : 'mut'}">${s.ledger.last ? '● Abgleich ' + ago(s.ledger.last.at) : s.ledger.addresses.length + ' Adressen · öffentliche Adressen, nur lesen'}</div></div><span class="gold">›</span></div>
     <div class="card row"><div class="grow"><b>VIAC, Bank</b><div class="small mut">Stand unter Invest › Konten aktualisieren</div></div><button class="btn line sm" data-go="#/invest">Konten</button></div>
     <div class="small mut">Nur CSV. Doppelte Transaktionen werden automatisch erkannt und ignoriert.</div>
     <button class="btn line block mt" data-go="#/vault/einstellungen">⚙️ Einstellungen, Backup, PIN</button>`,
@@ -271,6 +285,7 @@ export function vault(sub) {
         } catch (e) { console.error(e); toast('Datei konnte nicht gelesen werden'); }
       }));
       el.querySelector('[data-act=bxre]')?.addEventListener('click', () => openBingx([], 0));
+      el.querySelector('[data-act=scan]').addEventListener('click', openScanner);
     },
   };
 }
@@ -423,12 +438,15 @@ function settingsPage() {
     <div class="lbl mt">Backup</div>
     <div class="card small mut">Das Backup bleibt verschlüsselt und ist nur mit deinem PIN lesbar. Ohne Backup sind die Daten bei Verlust des iPhones weg.</div>
     <div class="grid2"><button class="btn gold" data-act="backup">⬇ Backup exportieren</button><label class="btn line">⬆ Backup laden<input type="file" data-act="restore" accept=".json,application/json" hidden></label></div>
+    <div class="lbl mt">Erinnerungen</div>
+    <div class="card small mut">Übernimmt Jahresabschluss (31.12.), Monats-Update, Steuerdokumente (Januar) und alle offenen Rechnungen mit Alarm in den iPhone-Kalender. Funktioniert auch, wenn die App geschlossen ist. Nach neuen Rechnungen erneut tippen.</div>
+    <button class="btn line block" data-act="ics">📅 Erinnerungen in Kalender übernehmen</button>
     <div class="lbl mt">Sicherheit</div>
     <div class="grid2"><button class="btn line" data-act="pin">PIN ändern</button><button class="btn line" data-act="lock">Jetzt sperren</button></div>
     <div class="lbl mt">Daten</div>
     <div class="grid2"><button class="btn line" data-act="demo">Demo-Daten laden</button><button class="btn line" data-act="goals">Standard-Ziele</button></div>
     <button class="btn danger block mt" data-act="wipe">Alles löschen</button>
-    <div class="small mut center mt">Finance Vault v1.1 · ${S().transactions.length} Transaktionen · ${S().invoices.length} Rechnungen</div>`,
+    <div class="small mut center mt">Finance Vault v2.0 · ${S().transactions.length} Transaktionen · ${S().invoices.length} Rechnungen</div>`,
     bind: (el) => {
       el.querySelectorAll('[data-set]').forEach((i) => i.addEventListener('change', () => { s[i.dataset.set] = i.type === 'number' ? Number(i.value) || 5 : i.value.trim(); commit(); toast('Gespeichert'); }));
       el.querySelector('[data-act=restore]').addEventListener('change', async (e) => {
@@ -440,6 +458,7 @@ function settingsPage() {
         const b = e.target.closest('button[data-act]'); if (!b) return;
         const a = b.dataset.act;
         if (a === 'backup') { await flush(); download(`FinanceVault_Backup_${isoDay(new Date())}.json`, await exportBackup()); }
+        if (a === 'ics') download('FinanceVault_Erinnerungen.ics', remindersICS(), 'text/calendar');
         if (a === 'lock') { await flush(); lock(); location.reload(); }
         if (a === 'pin') {
           const o = prompt('Aktueller PIN'); if (!o) return;

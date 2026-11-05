@@ -12,7 +12,9 @@ export const emptyState = () => ({
   goals: [],          // Ziele mit Meilensteinen
   invoices: [],       // Rechnungen
   imports: {},        // Plattform -> { last, count, mapping }
-  raw: {},            // Rohdaten von Konto-Auszügen (z. B. BingX), für Neuberechnung
+  raw: {},
+  documents: [],      // Dokumente (Scans, PDFs, Steuererklärung, Veranlagung)
+  ledger: { addresses: [], last: null },            // Rohdaten von Konto-Auszügen (z. B. BingX), für Neuberechnung
   coins: {},          // Symbol -> { id (CoinGecko), name, location }
   prices: {},         // Symbol -> { chf, change24h, at }
   pricesAt: null,

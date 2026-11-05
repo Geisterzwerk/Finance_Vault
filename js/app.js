@@ -7,7 +7,7 @@ import { holdings, checkMilestones } from './calc.js';
 import { refreshPrices } from './prices.js';
 import { $, toast, closeAll, refreshSheet, sheetOpen, closeSheet } from './ui.js';
 import { dashboard, invest, goals, celebrate } from './views-main.js';
-import { taxes, invoices, vault } from './views-more.js';
+import { taxes, invoices, vault, ui as taxUi } from './views-more.js';
 
 const ROUTES = { '': dashboard, invest, ziele: goals, steuern: taxes, rechnungen: invoices, vault };
 const TAB = { '': 0, ziele: 0, invest: 1, steuern: 2, rechnungen: 3, vault: 4 };
@@ -100,6 +100,7 @@ $('#back').addEventListener('click', () => (history.length > 1 ? history.back() 
 $('#sheet-back').addEventListener('click', closeSheet);
 $('#sheet-bg').addEventListener('click', closeAll);
 $('#refresh').addEventListener('click', () => updatePrices(true));
+$('#sub').addEventListener('click', (e) => { const yb = e.target.closest('[data-y]'); if (yb) { taxUi.taxYear += +yb.dataset.y; render(); } });
 
 showLock();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});

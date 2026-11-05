@@ -126,6 +126,11 @@ main { padding: 14px; max-width: 720px; margin: 0 auto; }
 #toast { position: fixed; left: 50%; bottom: calc(96px + var(--safe-b)); transform: translate(-50%, 20px); background: var(--ivory); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-weight: 600; font-size: 14px; opacity: 0; pointer-events: none; transition: all .25s; z-index: 400; max-width: 90vw; text-align: center; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
+.cropwrap { width: 100%; margin: 10px 0; text-align: center; }
+.cropwrap canvas, .cropwrap img { max-width: 100%; border-radius: 10px; display: block; margin: 0 auto; }
+pre.ocr { white-space: pre-wrap; font-size: 11px; color: var(--mut); max-height: 240px; overflow: auto; }
+details summary { cursor: pointer; color: var(--gold); font-weight: 600; }
+.ttable .fixbtn { grid-column: 1 / -1; justify-self: start; margin-top: 4px; }
 #print { display: none; }
 @media print {
   body { background: #fff; color: #111; padding: 0; }
