@@ -1,5 +1,5 @@
 // Service Worker – Offline-Fähigkeit. Nach jeder Änderung VERSION erhöhen!
-const VERSION = 'fv-v2.1.1';
+const VERSION = 'fv-v2.1.2';
 const LIBS = 'fv-libs-v1';
 const FILES = ['./', './index.html', './manifest.webmanifest', './css/style.css',
   './js/app.js', './js/vault.js', './js/store.js', './js/calc.js', './js/prices.js', './js/importer.js', './js/bingx.js',

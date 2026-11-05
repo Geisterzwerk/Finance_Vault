@@ -94,7 +94,7 @@ document.addEventListener('visibilitychange', async () => {
 addEventListener('online', () => isUnlocked() && updatePrices());
 
 // ---------- Events ----------
-addEventListener('hashchange', () => { closeAll(); render(); scrollTo(0, 0); });
+addEventListener('hashchange', () => { closeAll(); render(); $('#view').scrollTop = 0; });
 addEventListener('rerender', render);
 addEventListener('refreshprices', () => updatePrices(true));
 onChange(() => { render(); refreshSheet(); });
