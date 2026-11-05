@@ -117,3 +117,11 @@ document.addEventListener('focusout', () => {
 window.visualViewport?.addEventListener('resize', () => {
   if (window.visualViewport.height >= window.innerHeight - 1) window.scrollTo(window.scrollX, window.scrollY);
 });
+// iPhone: nach dem Schliessen der Tastatur verschobene Ansicht zurücksetzen
+document.addEventListener('focusout', () => {
+  setTimeout(() => window.scrollTo(window.scrollX, window.scrollY), 60);
+});
+window.visualViewport?.addEventListener('resize', () => {
+  if (window.visualViewport.height >= window.innerHeight - 1) window.scrollTo(window.scrollX, window.scrollY);
+});
+window.visualViewport?.addEventListener('resize', () => window.scrollTo(0, 0));

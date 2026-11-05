@@ -144,15 +144,16 @@ details summary { cursor: pointer; color: var(--gold); font-weight: 600; }
   .pr td { padding: 6px; border-bottom: 1px solid #ddd; } .pr .r { text-align: right; }
   .pr tfoot td { border-top: 2px solid #0C1626; } .pr .small { font-size: 8pt; color: #666; }
 }
-/* iPhone: kein Gummiband-Scrollen, das die Ansicht verschiebt */
-html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
-body { display: flex; flex-direction: column; height: 100dvh; padding-bottom: 0; }
+/* iPhone: App an allen 4 Rändern verankern (kein Spalt unten, kein Verschieben) */
+html { height: 100%; overflow: hidden; overscroll-behavior: none; }
+body { position: fixed; top: 0; right: 0; bottom: 0; left: 0; height: auto; overflow: hidden;
+  overscroll-behavior: none; display: flex; flex-direction: column; padding-bottom: 0; }
 .top { position: relative; flex: none; }
 #view { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
   max-width: none; width: 100%; padding: 14px max(14px, calc((100% - 692px) / 2)) 28px; }
 .tabbar { position: relative; flex: none; }
 #toast { bottom: calc(96px + var(--safe-b)); }
-@media print { html, body { height: auto; overflow: visible; display: block; } }
+@media print { html, body { position: static; height: auto; overflow: visible; display: block; } }
 
 .cropstage { padding: 4px 22px 6px; display: flex; justify-content: center; touch-action: none; overscroll-behavior: contain; -webkit-user-select: none; user-select: none; }
 .cropstage canvas { touch-action: none; display: block; }
