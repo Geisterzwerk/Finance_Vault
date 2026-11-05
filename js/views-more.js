@@ -1,16 +1,17 @@
 // =====================================================================
 // views-more.js – Steuern, Rechnungen, Vault (Import, Prüfen, Einstellungen)
 // =====================================================================
-import { S, commit, flush, uid, setState, demoState, emptyState, defaultGoals } from './store.js';
+import { S, commit, flush, uid, setState, demoState, defaultGoals } from './store.js';
 import { TYPES, yearEndHoldings } from './calc.js';
 import { historicalCHF } from './prices.js';
 import { parseCSV, guessMapping, interpret, preview, toTransactions, ROLES } from './importer.js';
+import * as BX from './bingx.js';
 import { putFile, getFileURL, deleteFile, exportBackup, importBackup, wipeAll, changePin, lock } from './vault.js';
 import {
   esc, chf, qty, price, dmy, dmyShort, ago, daysUntil, isoDay, bar, icon, openSheet, closeSheet, closeAll,
-  toast, download, chips, bindChips, chipVal, rerender,
+  toast, download, chips, chipVal, rerender,
 } from './ui.js';
-import { TAX_TOTAL } from './views-main.js';
+import { TAX_TOTAL, openTx } from './views-main.js';
 
 export const ui = { taxYear: new Date().getMonth() < 6 ? new Date().getFullYear() - 1 : new Date().getFullYear(), invSearch: '' };
 
@@ -28,6 +29,7 @@ export const CHECKLIST = [
   ['crypto', 'Crypto-Steuerbericht', '800', 'Vermögen'],
 ];
 const ty = (y) => (S().taxYears[y] ||= { rates: {}, checklist: {}, closed: null, snapshot: null });
+const nrp = (v) => price(v).replace('CHF ', '');
 
 // =====================================================================
 // STEUERN
@@ -35,20 +37,18 @@ const ty = (y) => (S().taxYears[y] ||= { rates: {}, checklist: {}, closed: null,
 export function taxes() {
   const y = ui.taxYear; const t = ty(y);
   const snap = t.closed ? t.snapshot : null;
-  const hold = snap ? snap.holdings : Object.values(yearEndHoldings(y)).filter((x) => x.qty > 1e-10).map((x) => ({ asset: x.asset, qty: x.qty, quality: x.quality }));
+  const hold = snap ? snap.holdings : Object.values(yearEndHoldings(y)).filter((x) => x.qty > 1e-8).map((x) => ({ asset: x.asset, qty: x.qty, quality: x.quality }));
   const rates = snap ? snap.rates : t.rates;
   let total = 0, missingRate = 0;
   for (const h of hold) { const r = rates[h.asset]; if (r && r.chf != null) total += h.qty * r.chf; else missingRate++; }
   const done = CHECKLIST.filter(([k]) => t.checklist[k]).length;
   const inv = S().invoices.filter((i) => i.tax !== 'no' && new Date(i.paidAt || i.due).getFullYear() === y);
-  const byZ = {}; inv.forEach((i) => { const z = i.ziffer || '–'; (byZ[z] ||= []).push(i); });
+  const byZ = {}; inv.forEach((i) => { (byZ[i.ziffer || '–'] ||= []).push(i); });
   const groups = [...new Set(CHECKLIST.map((c) => c[3]))];
   return {
-    title: `Steuern ${y}`, sub: `${esc(S().settings.canton)} · E-Tax BL
-      <button class="ybtn" data-y="-1">‹</button><button class="ybtn" data-y="1">›</button>`,
+    title: `Steuern ${y}`, sub: `${esc(S().settings.canton)} · E-Tax BL <button class="ybtn" data-y="-1">‹</button><button class="ybtn" data-y="1">›</button>`,
     html: `
     <div class="card hero"><div class="lbl">Vorbereitung</div><div class="row"><div class="serif huge grow">${Math.round((done / TAX_TOTAL) * 100)} %</div><span class="small mut">${done} von ${TAX_TOTAL} erledigt</span></div>${bar(done / TAX_TOTAL)}</div>
-
     <div class="lbl mt">Crypto-Steuerbericht · Bestand per 31.12.${y}</div>
     <div class="card ${snap ? 'goldb' : ''}">
       <div class="row"><div class="grow"><div class="small mut">Steuerwert Crypto total</div><div class="serif big2">${chf(total)}</div></div>
@@ -56,19 +56,17 @@ export function taxes() {
       <div class="small gold2">Eintragen: Wertschriften- und Guthabenverzeichnis (Ziffer 800)</div>
       <div class="ttable"><div class="th"><span>Asset</span><span>Bestand</span><span>Kurs</span><span>Wert</span></div>
       ${hold.map((h) => { const r = rates[h.asset]; return `<div class="tr ${snap ? '' : 'clickable'}" data-rate="${esc(h.asset)}"><b>${esc(h.asset)}</b><span>${qty(h.qty)}</span><span>${r && r.chf != null ? nrp(r.chf) : '<i class="amber">fehlt</i>'}</span><b>${r && r.chf != null ? chf(h.qty * r.chf) : '–'}</b>
-        <small class="${!r ? 'amber' : r.source === 'ESTV' ? 'pos' : 'amber'}">${r ? 'Kurs: ' + esc(r.source) : 'Steuerkurs eintragen'}${h.quality && h.quality !== 'ok' ? ' · Kaufhistorie prüfen' : ''}</small></div>`; }).join('') || '<div class="small mut">Kein Crypto-Bestand per 31.12.</div>'}</div>
-      ${!snap ? `<div class="small mut mt">Steuerkurse findest du in der ESTV-Kursliste (ICTax). Fehlt dort ein Coin, gilt der Jahresendkurs der Plattform als Ersatz.</div>
+        <small class="${!r ? 'amber' : r.source === 'ESTV' ? 'pos' : 'amber'}">${r ? 'Kurs: ' + esc(r.source) : 'Steuerkurs eintragen'}</small></div>`; }).join('') || '<div class="small mut">Kein Crypto-Bestand per 31.12.</div>'}</div>
+      ${!snap ? `<div class="small mut mt">Steuerkurse findest du in der ESTV-Kursliste (ICTax). Fehlt dort ein Coin, gilt der Jahresendkurs der Plattform als Ersatz. Für die Vermögenssteuer zählt nur der Bestand, nicht der Kaufpreis.</div>
         <div class="grid2 mt"><a class="btn line" href="https://www.ictax.admin.ch" target="_blank" rel="noopener">ESTV ICTax öffnen</a><button class="btn line" data-act="fallback">Ersatzkurse laden</button></div>
         <button class="btn gold block mt" data-act="close" ${missingRate ? 'disabled' : ''}>${missingRate ? `${missingRate} Steuerkurs${missingRate > 1 ? 'e' : ''} fehlen` : `Jahr ${y} abschliessen (Snapshot einfrieren)`}</button>`
-        : `<button class="btn line block mt" data-act="reopen">Abschluss aufheben</button>`}
+        : '<button class="btn line block mt" data-act="reopen">Abschluss aufheben</button>'}
       <div class="grid2 mt"><button class="btn line" data-act="print">PDF / Drucken</button><button class="btn line" data-act="csv">CSV exportieren</button></div>
     </div>
-
     <div class="lbl mt">Checkliste E-Tax BL</div>
     ${groups.map((g) => `<div class="small mut gl">${g}</div>${CHECKLIST.filter((c) => c[3] === g).map(([k, l, z]) => `
       <div class="chk clickable" data-chk="${k}">${t.checklist[k] ? icon('ok') : '<span class="ic empty"></span>'}<span class="grow ${t.checklist[k] ? '' : 'b'}">${l}</span><span class="small mut">Ziffer ${z}</span></div>`).join('')}`).join('')}
     <div class="small mut mt">Die Ziffern stammen aus deiner Steuererklärung 2023. Bitte jedes Jahr im E-Tax BL kontrollieren.</div>
-
     ${inv.length ? `<div class="lbl mt">Steuerrelevante Belege ${y}</div>${Object.entries(byZ).map(([z, list]) => `<div class="card"><div class="row"><b class="grow">Ziffer ${esc(z)}</b><b>${chf(list.reduce((a, i) => a + (+i.amount || 0), 0), 2)}</b></div>
       ${list.map((i) => `<div class="txr clickable" data-inv="${i.id}">${i.tax === 'yes' ? icon('ok') : icon('warn')}<span class="grow small">${esc(i.issuer)} · ${esc(i.title || '')}</span><span class="small">${chf(+i.amount, 2)}</span></div>`).join('')}</div>`).join('')}` : ''}`,
     bind: (el) => el.addEventListener('click', async (e) => {
@@ -89,7 +87,7 @@ export function taxes() {
       if (b.dataset.act === 'close' && confirm(`Bestand und Kurse per 31.12.${y} einfrieren? Spätere Transaktionen verändern diesen Snapshot nicht mehr.`)) {
         t.snapshot = { holdings: hold.map((h) => ({ ...h })), rates: JSON.parse(JSON.stringify(t.rates)) }; t.closed = new Date().toISOString(); t.checklist.crypto = true; commit(); toast(`Steuerjahr ${y} abgeschlossen`);
       }
-      if (b.dataset.act === 'reopen' && confirm('Abschluss aufheben? Bestand wird wieder live aus den Transaktionen berechnet.')) { t.closed = null; t.snapshot = null; commit(); }
+      if (b.dataset.act === 'reopen' && confirm('Abschluss aufheben?')) { t.closed = null; t.snapshot = null; commit(); }
       if (b.dataset.act === 'csv') {
         const lines = [['Asset', 'Bestand 31.12.' + y, 'Steuerkurs CHF', 'Steuerwert CHF', 'Kursquelle'].join(';')];
         hold.forEach((h) => { const r = rates[h.asset]; lines.push([h.asset, h.qty, r ? r.chf : '', r ? (h.qty * r.chf).toFixed(2) : '', r ? r.source : ''].join(';')); });
@@ -100,15 +98,14 @@ export function taxes() {
     }),
   };
 }
-const nrp = (v) => price(v).replace('CHF ', '');
 
 function openRate(y, sym) {
   const t = ty(y); const r = t.rates[sym] || {};
   openSheet({
     title: `Steuerkurs ${sym}`,
     render: () => `<div class="small mut">Kurs per 31.12.${y} in CHF. Quelle zuerst ESTV ICTax, sonst Jahresendkurs der Plattform.</div>
-      <label class="field"><span>Kurs CHF</span><input name="v" inputmode="decimal" value="${esc(r.chf ?? '')}"></label>
-      <div class="lbl">Quelle</div>${chips('src', [['ESTV', 'ESTV ICTax'], ['BingX 31.12.', 'BingX 31.12.'], ['Relai 31.12.', 'Relai 31.12.'], ['Einstandspreis', 'Einstandspreis'], [r.source || 'Andere', r.source || 'Andere']], r.source || 'ESTV')}
+      <label class="field mt"><span>Kurs CHF</span><input name="v" inputmode="decimal" value="${esc(r.chf ?? '')}"></label>
+      <div class="lbl">Quelle</div>${chips('src', [['ESTV', 'ESTV ICTax'], ['BingX 31.12.', 'BingX 31.12.'], ['Relai 31.12.', 'Relai 31.12.'], ['Einstandspreis', 'Einstandspreis']], r.source || 'ESTV')}
       <button class="btn gold block big mt" data-act="save">Speichern</button>${r.chf != null ? '<button class="btn danger block" data-act="del">Entfernen</button>' : ''}`,
     bind: (el) => el.addEventListener('click', (e) => {
       const b = e.target.closest('[data-act]'); if (!b) return;
@@ -138,13 +135,13 @@ function printReport(y, hold, rates, total, closed) {
 export function invoices() {
   const s = S(); const q = ui.invSearch.toLowerCase();
   const match = (i) => !q || `${i.issuer} ${i.title} ${i.number} ${i.category} ${i.amount}`.toLowerCase().includes(q);
-  const open = s.invoices.filter((i) => i.status === 'open' && match(i)).sort((a, b) => (a.due || '9') < (b.due || '9') ? -1 : 1);
-  const paid = s.invoices.filter((i) => i.status === 'paid' && match(i)).sort((a, b) => (b.paidAt || '') < (a.paidAt || '') ? -1 : 1);
+  const open = s.invoices.filter((i) => i.status === 'open' && match(i)).sort((a, b) => ((a.due || '9') < (b.due || '9') ? -1 : 1));
+  const paid = s.invoices.filter((i) => i.status === 'paid' && match(i)).sort((a, b) => ((b.paidAt || '') < (a.paidAt || '') ? -1 : 1));
   const sum = open.reduce((a, i) => a + (+i.amount || 0), 0);
   const row = (i) => {
     const d = i.due ? daysUntil(i.due) : null;
     const st = i.status === 'paid' ? `<span class="pos">bezahlt ${dmy(i.paidAt)}</span>` : d == null ? '<span class="mut">ohne Fälligkeit</span>' : d < 0 ? `<span class="neg">überfällig seit ${-d} Tag${d === -1 ? '' : 'en'}</span>` : d === 0 ? '<span class="amber">heute fällig</span>' : `<span class="${d <= 7 ? 'amber' : 'mut'}">fällig in ${d} Tag${d === 1 ? '' : 'en'} · ${dmyShort(i.due)}</span>`;
-    return `<div class="card row clickable" data-inv="${i.id}">${i.status === 'paid' ? icon('ok') : `<i class="dotc ${d != null && d < 0 ? 'red' : d != null && d <= 7 ? 'amber' : 'mut'}"></i>`}
+    return `<div class="card row clickable" data-inv="${i.id}">${i.status === 'paid' ? icon('ok') : `<i class="dotc ${d != null && d < 0 ? 'red' : d != null && d <= 7 ? 'amber' : 'grey'}"></i>`}
       <div class="grow"><b>${esc(i.issuer)}</b>${i.title ? ` <span class="small mut">· ${esc(i.title)}</span>` : ''}<div class="small">${st}${i.file ? ' · 📎' : ''}</div></div><b class="${i.status === 'paid' ? 'mut' : ''}">${chf(+i.amount, 2)}</b></div>`;
   };
   return {
@@ -153,12 +150,12 @@ export function invoices() {
       <button class="btn gold block" data-act="add">＋ Rechnung erfassen</button>
       <div class="lbl mt">Offen · ${chf(sum, 2)}</div>${open.map(row).join('') || '<div class="card mut small">Keine offenen Rechnungen</div>'}
       <div class="lbl mt">Bezahlt</div>${paid.map(row).join('') || '<div class="card mut small">Noch keine</div>'}
-      <div class="small mut mt">Erinnerungen per Push folgen in Phase 2. Bis dahin: in der Rechnung «In Kalender» tippen, dann erinnert dich der iPhone-Kalender.</div>`,
+      <div class="small mut mt">Push-Erinnerungen folgen in Phase 2. Bis dahin: in der Rechnung «In Kalender» tippen.</div>`,
     bind: (el) => {
       const sI = el.querySelector('[data-search]');
       sI.addEventListener('input', () => { ui.invSearch = sI.value; dispatchEvent(new Event('rerender')); const n = document.querySelector('[data-search]'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); });
       el.addEventListener('click', (e) => {
-        const i = e.target.closest('[data-inv]'); if (i) return openInvoice(S().invoices.find((q) => q.id === i.dataset.inv));
+        const i = e.target.closest('[data-inv]'); if (i) return openInvoice(S().invoices.find((x) => x.id === i.dataset.inv));
         if (e.target.closest('[data-act=add]')) openInvoice();
       });
     },
@@ -170,7 +167,7 @@ export function openInvoice(inv = null) {
   let newFile = null;
   const capture = (el) => {
     const v = (n) => el.querySelector(`[name=${n}]`)?.value ?? '';
-    Object.assign(d, { issuer: v('issuer'), title: v('title'), number: v('number'), amount: v('amount'), due: v('due'), category: v('category'), ziffer: v('ziffer'), note: v('note'), paidAt: v('paidAt'), tax: chipVal(el, 'tax') || d.tax });
+    Object.assign(d, { issuer: v('issuer'), title: v('title'), number: v('number'), amount: v('amount'), due: v('due'), category: v('category'), ziffer: v('ziffer'), note: v('note'), paidAt: v('paidAt') || d.paidAt, tax: chipVal(el, 'tax') || d.tax });
   };
   openSheet({
     title: inv ? inv.issuer : 'Neue Rechnung', capture,
@@ -210,10 +207,10 @@ export function openInvoice(inv = null) {
         if (b.dataset.act === 'del') {
           if (!confirm('Rechnung löschen?')) return;
           if (inv.file) await deleteFile(inv.file);
-          s.invoices = s.invoices.filter((q) => q.id !== inv.id); commit(); closeSheet(); return;
+          s.invoices = s.invoices.filter((x) => x.id !== inv.id); commit(); closeSheet(); return;
         }
         const amount = Number(String(d.amount).replace(/['’]/g, '').replace(',', '.'));
-        if (!d.issuer.trim() || !(amount >= 0)) return toast('Aussteller und Betrag angeben');
+        if (!d.issuer.trim() || !(amount >= 0) || d.amount === '') return toast('Aussteller und Betrag angeben');
         const o = { ...d, issuer: d.issuer.trim(), amount };
         if (newFile) { const fid = uid(); await putFile(fid, newFile); if (inv && inv.file) await deleteFile(inv.file); o.file = fid; o.fileName = newFile.name; }
         if (inv) Object.assign(inv, o); else s.invoices.push({ id: uid(), created: new Date().toISOString(), ...o });
@@ -234,10 +231,6 @@ function downloadICS(d) {
 // =====================================================================
 // VAULT
 // =====================================================================
-const SOURCES = [
-  ['Relai', 'CSV-Export der Auftragshistorie', 'Relai › Profil › Transaktionen › Export › CSV', 35],
-  ['BingX', 'Transaction History und Spot Trade History', 'BingX › Assets › Order/Transaction History › Export (max. 1 Jahr pro Export)', 35],
-];
 export function vault(sub) {
   if (sub === 'pruefen') return reviewPage();
   if (sub === 'einstellungen') return settingsPage();
@@ -245,32 +238,98 @@ export function vault(sub) {
   const status = (name, maxDays) => {
     const im = s.imports[name]; if (!im) return '<span class="mut">noch nie importiert</span>';
     const d = Math.floor((Date.now() - new Date(im.last)) / 864e5);
-    return `<span class="${d <= maxDays ? 'pos' : d <= maxDays * 2 ? 'amber' : 'neg'}">● Import ${ago(im.last)} · ${im.count} Transaktionen</span>`;
+    return `<span class="${d <= maxDays ? 'pos' : d <= maxDays * 2 ? 'amber' : 'neg'}">● Import ${ago(im.last)}${im.to ? ' · Daten bis ' + esc(im.to.slice(0, 10)) : ''}</span>`;
   };
-  const others = Object.keys(s.imports).filter((k) => !SOURCES.some((x) => x[0] === k));
+  const others = Object.keys(s.imports).filter((k) => !['BingX', 'Relai'].includes(k));
   const rc = s.transactions.filter((t) => t.type === 'review').length;
   return {
     title: 'Vault', sub: 'Import-Zentrale · du lieferst Rohdaten, Finance Vault rechnet',
     html: `
     ${rc ? `<div class="card row clickable goldb" data-go="#/vault/pruefen">${icon('warn')}<div class="grow"><b>${rc} Transaktion${rc > 1 ? 'en' : ''} zuordnen</b><div class="small mut">Lieber einmal fragen als falsch rechnen</div></div><span class="gold">›</span></div>` : ''}
-    ${SOURCES.map(([n, d, how, max]) => `<div class="card"><div class="row"><div class="grow"><b class="big1">${n}</b><div class="small mut">${d}</div></div>
-      <label class="btn line sm">Importieren<input type="file" accept=".csv,text/csv,text/plain" data-import="${n}" hidden></label></div>
-      <div class="small mt">${status(n, max)}</div><div class="small mut">So geht's: ${how}</div></div>`).join('')}
+    <div class="card"><div class="row"><div class="grow"><b class="big1">BingX</b><div class="small mut">Kontoauszüge: Spot_Account.csv + Fund_Account.csv (alle auf einmal wählen)</div></div>
+      <label class="btn line sm">Importieren<input type="file" multiple accept=".csv,text/csv,text/plain" data-import="BingX" hidden></label></div>
+      <div class="small mt">${status('BingX', 35)}</div>
+      <div class="small mut">So geht's: BingX › Assets › Export › Konto-Auszug (max. 1 Jahr pro Export). Futures/Wealth-Dateien darfst du mitwählen.</div>
+      ${s.raw.bingx && s.raw.bingx.length ? `<button class="btn line sm mt" data-act="bxre">↻ Neu berechnen (${s.raw.bingx.length} Zeilen)</button>` : ''}</div>
+    <div class="card"><div class="row"><div class="grow"><b class="big1">Relai</b><div class="small mut">CSV-Export der Auftragshistorie</div></div>
+      <label class="btn line sm">Importieren<input type="file" accept=".csv,text/csv,text/plain" data-import="Relai" hidden></label></div>
+      <div class="small mt">${status('Relai', 35)}</div><div class="small mut">So geht's: Relai › Profil › Transaktionen › Export › CSV. Die Zuordnung wird angepasst, sobald ein Beispiel-Export vorliegt.</div></div>
     ${others.map((n) => `<div class="card row"><div class="grow"><b>${esc(n)}</b><div class="small">${status(n, 60)}</div></div><label class="btn line sm">Importieren<input type="file" accept=".csv,text/csv,text/plain" data-import="${esc(n)}" hidden></label></div>`).join('')}
     <div class="card row"><div class="grow"><b>Andere Plattform</b><div class="small mut">Beliebige CSV mit Spalten-Zuordnung</div></div><label class="btn line sm">CSV wählen<input type="file" accept=".csv,text/csv,text/plain" data-import="" hidden></label></div>
-    <div class="card row"><div class="grow"><b>Ledger</b><div class="small mut">Öffentliche Adressen, automatischer Bestand · folgt in Phase 4</div></div><span class="tag">bald</span></div>
+    <div class="card row"><div class="grow"><b>Ledger</b><div class="small mut">Öffentliche Adressen, automatischer Bestand · Phase 4</div></div><span class="tag">bald</span></div>
     <div class="card row"><div class="grow"><b>VIAC, Bank</b><div class="small mut">Stand unter Invest › Konten aktualisieren</div></div><button class="btn line sm" data-go="#/invest">Konten</button></div>
-    <div class="small mut">Nur CSV. XLSX bitte in Excel/Numbers als CSV speichern. Doppelte Transaktionen werden automatisch erkannt und ignoriert.</div>
+    <div class="small mut">Nur CSV. Doppelte Transaktionen werden automatisch erkannt und ignoriert.</div>
     <button class="btn line block mt" data-go="#/vault/einstellungen">⚙️ Einstellungen, Backup, PIN</button>`,
-    bind: (el) => el.querySelectorAll('[data-import]').forEach((inp) => inp.addEventListener('change', async () => {
-      const f = inp.files[0]; if (!f) return;
-      try { openImport(await f.text(), inp.dataset.import, f.name); } catch (e) { toast('Datei konnte nicht gelesen werden'); }
-      inp.value = '';
-    })),
+    bind: (el) => {
+      el.querySelectorAll('[data-import]').forEach((inp) => inp.addEventListener('change', async () => {
+        const files = [...inp.files]; inp.value = ''; if (!files.length) return;
+        try {
+          const texts = await Promise.all(files.map(async (f) => ({ name: f.name, text: await f.text() })));
+          const bx = texts.map((t) => BX.parseFile(t.text, t.name)).filter(Boolean);
+          if (bx.length) openBingx(bx, texts.length - bx.length);
+          else openImport(texts[0].text, inp.dataset.import, texts[0].name);
+        } catch (e) { console.error(e); toast('Datei konnte nicht gelesen werden'); }
+      }));
+      el.querySelector('[data-act=bxre]')?.addEventListener('click', () => openBingx([], 0));
+    },
   };
 }
 
-// ---------- Import-Assistent ----------
+// ---------- BingX-Import ----------
+function openBingx(files, ignored) {
+  const s = S();
+  const incoming = files.flatMap((f) => f.rows);
+  const merged = BX.mergeRaw(s.raw.bingx || [], incoming);
+  let result = null; let busy = false;
+  const existingIds = new Set(s.transactions.filter((t) => String(t.extId || '').startsWith('bingx:')).map((t) => t.extId));
+  openSheet({
+    title: 'BingX-Import',
+    render: () => {
+      const fl = files.map((f) => `<div class="txr"><span class="grow small"><b>${esc(f.name)}</b><br><span class="mut">${BX.ACCT_LABEL[f.acct]}-Konto</span></span><span class="small ${f.rows.length ? '' : 'mut'}">${f.rows.length ? f.rows.length + ' Zeilen' : 'leer, ignoriert'}</span></div>`).join('');
+      let rep = '';
+      if (result) {
+        const st = result.stats; const newTx = result.txs.filter((t) => !existingIds.has(t.extId)).length;
+        const miss = Object.entries(st.missingHistory).sort((a, b) => b[1] - a[1]);
+        const bal = Object.entries(result.balances).filter(([, v]) => v > 1e-6);
+        rep = `
+        <div class="card goldb"><b class="gold">Auszug geprüft</b>
+          <div class="small">Zeitraum ${esc((result.from || '').slice(0, 10))} bis ${esc((result.to || '').slice(0, 10))}</div>
+          <div class="small">${st.swaps} Trades (davon ${st.recurring} Sparplan-Käufe) · ${st.withdrawals} Auszahlungen an ${esc(s.settings.defaultWallet)} · ${st.deposits} Einzahlungen · ${st.rewards} Rebates</div>
+          ${Object.entries(st.recurringSpent).map(([a, v]) => `<div class="small">Sparplan: ${qty(v)} ${esc(a)} investiert</div>`).join('')}
+          <div class="small mt"><b>${result.txs.length}</b> Transaktionen, davon <b>${newTx}</b> neu${result.missingChf ? ` · <span class="amber">${result.missingChf} ohne CHF-Kurs (offline?)</span>` : ''}</div></div>
+        ${miss.length ? `<div class="card"><div class="row">${icon('warn')}<b class="grow">Kaufhistorie fehlt</b></div>
+          <div class="small mut">Diese Coins kamen im Auszug vor, aber ihre Käufe nicht (älter als der Export oder nicht enthalten). Bestand stimmt, Ø-Preis bleibt offen.</div>
+          ${miss.map(([a, v]) => `<div class="txr"><b class="grow">${esc(a)}</b><span class="small">${qty(v)}</span></div>`).join('')}</div>` : ''}
+        ${Object.keys(st.stableGaps).length ? `<div class="card small">${icon('warn')} Fehlende Stablecoin-Buchungen (Käufe ausserhalb des Exports): ${Object.entries(st.stableGaps).map(([a, v]) => `${qty(v)} ${esc(a)}`).join(', ')}. Wurde als Ausgleich verbucht.</div>` : ''}
+        ${st.review ? `<div class="card small">${icon('warn')} ${st.review} Einträge zum Zuordnen (z. B. Einzahlungen von Coins). Du wirst danach gefragt.</div>` : ''}
+        ${bal.length ? `<div class="card"><div class="lbl">Noch auf BingX laut Auszug</div>${bal.map(([a, v]) => `<div class="txr"><b class="grow">${esc(a)}</b><span class="small">${qty(v)}</span></div>`).join('')}</div>` : ''}
+        <button class="btn gold block big" data-act="apply">Übernehmen</button>`;
+      }
+      return `${files.length ? `<div class="card">${fl}</div>` : ''}${ignored ? `<div class="small amber">${ignored} Datei(en) nicht als BingX-Auszug erkannt und ignoriert.</div>` : ''}
+        <div class="small mut">${merged.rows.length} Zeilen gesamt${files.length ? `, davon ${merged.added} neu` : ''}. Interne Umbuchungen (Spot ↔ Fund) werden ignoriert. Der Saldo jeder Zeile wird geprüft.</div>
+        ${result ? rep : `<button class="btn gold block big mt" data-act="run" ${busy ? 'disabled' : ''}>${busy ? 'Berechne …' : 'Prüfen und berechnen'}</button>`}
+        <div class="small mut mt" data-prog></div>`;
+    },
+    bind: (el) => el.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-act]'); if (!b) return;
+      if (b.dataset.act === 'run') {
+        busy = true; b.disabled = true; b.textContent = 'Lade Kurse und berechne …';
+        const prog = el.querySelector('[data-prog]');
+        try { result = await BX.build(merged.rows, (i, n) => { prog.textContent = `${i} / ${n}`; }); }
+        catch (err) { console.error(err); toast('Fehler bei der Berechnung'); }
+        busy = false; rerender();
+      }
+      if (b.dataset.act === 'apply') {
+        s.raw.bingx = merged.rows;
+        BX.apply(result);
+        s.imports.BingX = { last: new Date().toISOString(), count: result.txs.length, to: result.to };
+        commit(); closeAll(); toast('BingX übernommen'); dispatchEvent(new Event('refreshprices'));
+      }
+    }),
+  });
+}
+
+// ---------- Allgemeiner CSV-Import ----------
 function openImport(text, platform, fname) {
   const parsed = parseCSV(text);
   const s = S();
@@ -281,8 +340,7 @@ function openImport(text, platform, fname) {
     mapping: saved ? { ...saved.mapping } : guessMapping(parsed.headers),
     defaultQuote: saved ? saved.defaultQuote : platform === 'Relai' ? 'CHF' : 'USDT',
     defaultAsset: saved ? saved.defaultAsset : platform === 'Relai' ? 'BTC' : '',
-    trackQuote: saved ? saved.trackQuote : true,
-    sample: [], checked: null,
+    trackQuote: saved ? saved.trackQuote : true, sample: [], checked: null,
   };
   const capture = (el) => {
     for (const [r] of ROLES) { const v = el.querySelector(`[name=m_${r}]`)?.value; if (v !== undefined) st.mapping[r] = v === '' ? undefined : +v; }
@@ -292,20 +350,18 @@ function openImport(text, platform, fname) {
     st.trackQuote = !!el.querySelector('[name=tq]')?.checked;
   };
   const opts = () => ({ platform: st.platform, defaultQuote: st.defaultQuote, defaultAsset: st.defaultAsset, trackQuote: st.trackQuote });
+  const KL = { buy: 'Kauf', sell: 'Verkauf', deposit: 'Einzahlung', withdraw: 'Auszahlung', transfer: 'Transfer', reward: 'Reward', fee: 'Gebühr', review: 'Unklar' };
+  const sampleHTML = () => (st.sample.length ? st.sample.map((r) => `<div class="txr"><div class="grow small"><b>${KL[r.kind]}</b> ${qty(r.amount)} ${esc(r.asset)}
+    <div class="mut">${dmyShort(r.date)} · ${r.chf != null ? 'CHF ' + r.chf : r.total != null ? r.quote + ' ' + qty(r.total) : 'ohne Betrag'}</div></div></div>`).join('')
+    : '<div class="small amber">Keine Zeile erkannt. Bitte Datum, Coin (oder Paar) und Menge zuordnen.</div>');
   const refreshSample = async (el) => {
-    const r = await interpret({ ...parsed, rows: parsed.rows.slice(0, 6) }, st.mapping, opts());
-    st.sample = r.records;
-    const box = el.querySelector('[data-sample]');
-    if (box) box.innerHTML = sampleHTML();
+    st.sample = (await interpret({ ...parsed, rows: parsed.rows.slice(0, 6) }, st.mapping, opts())).records;
+    const box = el.querySelector('[data-sample]'); if (box) box.innerHTML = sampleHTML();
   };
-  const sampleHTML = () => st.sample.length ? st.sample.map((r) => `<div class="txr"><i class="dotc ${TYPES[{ deposit: 'transfer', withdraw: 'transfer' }[r.kind] || r.kind]?.c || 'amber'}"></i>
-    <div class="grow small"><b>${{ buy: 'Kauf', sell: 'Verkauf', deposit: 'Einzahlung', withdraw: 'Auszahlung', transfer: 'Transfer', reward: 'Reward', fee: 'Gebühr', review: 'Unklar' }[r.kind]}</b> ${qty(r.amount)} ${esc(r.asset)}
-    <div class="mut">${dmyShort(r.date)} · ${r.chf != null ? 'CHF ' + r.chf : r.total != null ? r.quote + ' ' + qty(r.total) : 'ohne Betrag'}${r.fee ? ' · Gebühr ' + r.fee + ' ' + (r.feeAsset || '') : ''}</div></div></div>`).join('')
-    : '<div class="small amber">Keine Zeile erkannt. Bitte Datum, Coin (oder Paar) und Menge zuordnen.</div>';
   openSheet({
     title: 'Import ' + st.platform, capture,
     render: () => `
-      <div class="small mut">${esc(fname)} · ${parsed.rows.length} Zeilen · ${parsed.headers.length} Spalten${saved ? ' · gespeicherte Zuordnung verwendet' : ''}</div>
+      <div class="small mut">${esc(fname)} · ${parsed.rows.length} Zeilen · ${parsed.headers.length} Spalten${saved ? ' · gespeicherte Zuordnung' : ''}</div>
       <label class="field mt"><span>Plattform</span><input name="platform" value="${esc(st.platform)}"></label>
       <div class="lbl">Spalten zuordnen</div>
       <div class="grid2">${ROLES.map(([r, l]) => `<label class="field"><span>${l}</span><select name="m_${r}"><option value="">–</option>${parsed.headers.map((h, i) => `<option value="${i}" ${st.mapping[r] === i ? 'selected' : ''}>${esc(h)}</option>`).join('')}</select></label>`).join('')}</div>
@@ -313,10 +369,10 @@ function openImport(text, platform, fname) {
         <label class="field"><span>Gegenwährung falls keine Spalte</span><input name="dq" value="${esc(st.defaultQuote)}"></label>
         <label class="field"><span>Coin falls keine Spalte</span><input name="da" value="${esc(st.defaultAsset)}" placeholder="z. B. BTC bei Relai"></label>
       </div>
-      <label class="check"><input type="checkbox" name="tq" ${st.trackQuote ? 'checked' : ''}> Stablecoins/Gegen-Coins (z. B. USDT) als eigenen Bestand mitführen</label>
-      <div class="lbl mt">Vorschau (erste Zeilen)</div><div class="card" data-sample>${sampleHTML()}</div>
-      ${st.checked ? `<div class="card goldb"><b class="gold">${esc(st.platform)}-Import geprüft</b><div class="small">${st.checked.read} gelesen · ${st.checked.dup} schon vorhanden · <b>${st.checked.fresh.length} neu</b>${st.checked.errors ? ' · ' + st.checked.errors + ' unlesbar' : ''}</div>
-        ${st.checked.review ? `<div class="small amber">${st.checked.review} davon unklar, du wirst danach gefragt</div>` : ''}<div class="small mut">Doppelte Transaktionen werden ignoriert. Für Käufe in USDT werden historische CHF-Kurse geladen.</div></div>
+      <label class="check"><input type="checkbox" name="tq" ${st.trackQuote ? 'checked' : ''}> Gegen-Coins (z. B. USDT) als eigenen Bestand mitführen</label>
+      <div class="lbl mt">Vorschau</div><div class="card" data-sample>${sampleHTML()}</div>
+      ${st.checked ? `<div class="card goldb"><b class="gold">Import geprüft</b><div class="small">${st.checked.read} gelesen · ${st.checked.dup} schon vorhanden · <b>${st.checked.fresh.length} neu</b>${st.checked.errors ? ' · ' + st.checked.errors + ' unlesbar' : ''}</div>
+        ${st.checked.review ? `<div class="small amber">${st.checked.review} davon unklar</div>` : ''}</div>
         <button class="btn gold block big" data-act="go" ${st.checked.fresh.length ? '' : 'disabled'}>${st.checked.fresh.length} Transaktionen importieren</button>`
         : '<button class="btn gold block big mt" data-act="check">Prüfen</button>'}
       <div class="small mut mt" data-prog></div>`,
@@ -326,11 +382,7 @@ function openImport(text, platform, fname) {
       el.addEventListener('click', async (e) => {
         const b = e.target.closest('[data-act]'); if (!b) return;
         capture(el);
-        if (b.dataset.act === 'check') {
-          const r = await interpret(parsed, st.mapping, opts());
-          const p = preview(r.records);
-          st.checked = { read: r.records.length, errors: r.errors, ...p }; rerender(); return;
-        }
+        if (b.dataset.act === 'check') { const r = await interpret(parsed, st.mapping, opts()); st.checked = { read: r.records.length, errors: r.errors, ...preview(r.records) }; rerender(); return; }
         if (b.dataset.act === 'go') {
           b.disabled = true;
           const prog = el.querySelector('[data-prog]');
@@ -353,8 +405,8 @@ function reviewPage() {
   return {
     title: 'Bitte zuordnen', sub: 'Lieber einmal fragen als falsch rechnen',
     html: list.map((t) => `<div class="card clickable" data-tx="${t.id}">${icon('warn')} <b>${qty(t.amount)} ${esc(t.asset)}</b> <span class="small mut">${esc(t.platform)} · ${dmy(t.date)}</span>
-      <div class="small mut">${esc(t.raw || t.note || '')}</div></div>`).join('') || '<div class="card">Alles zugeordnet 👍</div>',
-    bind: (el) => el.addEventListener('click', (e) => { const c = e.target.closest('[data-tx]'); if (c) import('./views-main.js').then((m) => m.openTx(S().transactions.find((q) => q.id === c.dataset.tx))); }),
+      <div class="small">${esc(t.raw || '')}</div><div class="small mut">${esc(t.note || '')}</div></div>`).join('') || '<div class="card">Alles zugeordnet 👍</div>',
+    bind: (el) => el.addEventListener('click', (e) => { const c = e.target.closest('[data-tx]'); if (c) openTx(S().transactions.find((q) => q.id === c.dataset.tx)); }),
   };
 }
 
@@ -369,14 +421,14 @@ function settingsPage() {
     <label class="field"><span>Automatisch sperren nach (Minuten)</span><input data-set="autoLockMin" type="number" value="${s.autoLockMin}"></label>
     <label class="field"><span>CoinGecko Demo-API-Key (optional, für mehr Abfragen)</span><input data-set="cgKey" value="${esc(s.cgKey)}" placeholder="CG-…"></label>
     <div class="lbl mt">Backup</div>
-    <div class="card small mut">Das Backup bleibt verschlüsselt und ist nur mit deinem PIN lesbar. Speichere es z. B. in «Dateien». Ohne Backup sind die Daten bei Verlust des iPhones weg.</div>
+    <div class="card small mut">Das Backup bleibt verschlüsselt und ist nur mit deinem PIN lesbar. Ohne Backup sind die Daten bei Verlust des iPhones weg.</div>
     <div class="grid2"><button class="btn gold" data-act="backup">⬇ Backup exportieren</button><label class="btn line">⬆ Backup laden<input type="file" data-act="restore" accept=".json,application/json" hidden></label></div>
     <div class="lbl mt">Sicherheit</div>
     <div class="grid2"><button class="btn line" data-act="pin">PIN ändern</button><button class="btn line" data-act="lock">Jetzt sperren</button></div>
     <div class="lbl mt">Daten</div>
     <div class="grid2"><button class="btn line" data-act="demo">Demo-Daten laden</button><button class="btn line" data-act="goals">Standard-Ziele</button></div>
     <button class="btn danger block mt" data-act="wipe">Alles löschen</button>
-    <div class="small mut center mt">Finance Vault v1.0 · Phase 1 · ${S().transactions.length} Transaktionen · ${S().invoices.length} Rechnungen</div>`,
+    <div class="small mut center mt">Finance Vault v1.1 · ${S().transactions.length} Transaktionen · ${S().invoices.length} Rechnungen</div>`,
     bind: (el) => {
       el.querySelectorAll('[data-set]').forEach((i) => i.addEventListener('change', () => { s[i.dataset.set] = i.type === 'number' ? Number(i.value) || 5 : i.value.trim(); commit(); toast('Gespeichert'); }));
       el.querySelector('[data-act=restore]').addEventListener('change', async (e) => {
@@ -391,9 +443,9 @@ function settingsPage() {
         if (a === 'lock') { await flush(); lock(); location.reload(); }
         if (a === 'pin') {
           const o = prompt('Aktueller PIN'); if (!o) return;
-          const n = prompt('Neuer PIN (mind. 6 Ziffern)'); if (!n || n.length < 6) return toast('Mindestens 6 Zeichen');
+          const n = prompt('Neuer PIN (mind. 6 Zeichen)'); if (!n || n.length < 6) return toast('Mindestens 6 Zeichen');
           if (prompt('Neuen PIN wiederholen') !== n) return toast('PINs stimmen nicht überein');
-          toast('Bitte warten …'); toast((await changePin(o, n, S())) ? 'PIN geändert' : 'Aktueller PIN falsch');
+          toast((await changePin(o, n, S())) ? 'PIN geändert' : 'Aktueller PIN falsch');
         }
         if (a === 'demo' && confirm('Demo-Daten laden? Deine aktuellen Daten werden ersetzt.')) { setState(demoState()); commit(); location.hash = '#/'; toast('Demo-Daten geladen'); dispatchEvent(new Event('refreshprices')); }
         if (a === 'goals' && confirm('Standard-Ziele hinzufügen?')) { S().goals.push(...defaultGoals(S())); commit(); toast('Ziele hinzugefügt'); }

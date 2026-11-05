@@ -8,84 +8,72 @@ Persönliches Finanz-Cockpit als iPhone-Web-App (PWA): Crypto mit Ø-Kaufpreis u
 
 > ⚠️ **PIN vergessen = Daten weg.** Es gibt bewusst keine Hintertür. PIN sicher notieren und regelmässig ein Backup machen.
 
----
-
-## 1. Struktur
+## Struktur
 
 ```
 finance-vault/
-├── index.html             Grundgerüst, Tab-Leiste
-├── manifest.webmanifest   App-Name, Icon (Home-Bildschirm)
-├── sw.js                  Offline-Funktion (VERSION bei jeder Änderung erhöhen!)
+├── index.html, manifest.webmanifest, sw.js (VERSION bei jeder Änderung erhöhen!)
 ├── css/style.css          Design (Navy & Gold)
-├── icons/                 App-Icons
+├── icons/
 └── js/
     ├── app.js             Start, Sperrbildschirm, Navigation, Kurse, Meilensteine
     ├── vault.js           Verschlüsselter Speicher (IndexedDB + Web Crypto), Backup
     ├── store.js           App-Zustand, Demo-Daten, Standard-Ziele
-    ├── calc.js            Berechnungslogik: Bestand, Ø-Preis, Gewinne, Nettovermögen, Stichtag
+    ├── calc.js            Bestand, Ø-Preis, Gewinne, Nettovermögen, Stichtag
     ├── prices.js          CoinGecko: Live- und historische Kurse in CHF
-    ├── importer.js        CSV-Import, Spalten-Zuordnung, Duplikaterkennung
+    ├── bingx.js           BingX-Kontoauszüge (Spot/Fund) mit Saldo-Abgleich
+    ├── importer.js        Allgemeiner CSV-Import (Relai, andere)
     ├── ui.js              Formatierung, Sheets, Konfetti
     ├── views-main.js      Übersicht, Invest, Coin-Detail, Konten, Ziele
     └── views-more.js      Steuern, Rechnungen, Vault (Import, Prüfen, Einstellungen)
 ```
 
-## 2. In VS Code testen
+## Testen in VS Code
 
-1. Ordner in VS Code öffnen → Rechtsklick auf `index.html` → **Open with Live Server**
-   (oder im Terminal: `python -m http.server 8000` → <http://localhost:8000>)
-2. PIN festlegen (Test-PIN, z. B. 123456)
-3. **Vault › Einstellungen › Demo-Daten laden**
-4. iPhone-Ansicht: `F12` → `Strg+Shift+M`
+Rechtsklick auf `index.html` → **Open with Live Server** (oder `python -m http.server 8000`). Test-PIN festlegen, dann **Vault › Einstellungen › Demo-Daten laden**.
 
-## 3. Auf GitHub und aufs iPhone
-
-Neues Repository auf github.com erstellen (z. B. `finance-vault`, **Public**, ohne README), dann im Projektordner:
+## GitHub und iPhone
 
 ```powershell
 git init
 git add .
-git commit -m "Finance Vault v1.0"
+git commit -m "Finance Vault v1.1"
 git branch -M main
 git remote add origin https://github.com/Geisterzwerk/finance-vault.git
 git push -u origin main
 ```
 
-GitHub → **Settings › Pages** → Branch `main`, `/ (root)` → Save.
-Adresse: `https://geisterzwerk.github.io/finance-vault/` → in **Safari** öffnen → Teilen → **Zum Home-Bildschirm** → «Als Web-App öffnen» an.
+GitHub → Settings › Pages → Branch `main`, `/ (root)`. Dann `https://geisterzwerk.github.io/finance-vault/` in Safari öffnen → Teilen → Zum Home-Bildschirm.
 
-> Im Repo liegt nur Code. Deine Daten bleiben auf dem iPhone. Backups und CSV-Exporte sind per `.gitignore` ausgeschlossen. **Echte Exporte nie ins Repo legen.**
+> Im Repo liegt nur Code. **Echte Exporte (CSV) nie ins Repo legen** – `.gitignore` schliesst CSV, XLSX und Backups aus.
 
-Updates: Code ändern → in `sw.js` `VERSION` erhöhen → `git push` → App 1–2× schliessen und öffnen.
+## BingX-Import
 
-## 4. Import
+**Vault › BingX › Importieren** → alle Dateien des Konto-Auszugs auf einmal wählen (`Spot_Account.csv`, `Fund_Account.csv`, leere Futures/Wealth-Dateien dürfen mit).
 
-**Vault › Relai / BingX › Importieren** → CSV wählen → Spalten prüfen → **Prüfen** → **Importieren**
+- Spot-Trades werden aus den Zeilenpaaren mit gleicher Zeit erkannt (+ erhalten / − bezahlt), Sparplan-Käufe separat gezählt.
+- CHF-Wert: Stablecoin-Seite × historischer USD/CHF-Kurs (CoinGecko).
+- Auszahlungen → Transfer an die Standard-Wallet (Ledger). Bestand und Ø-Preis bleiben gleich.
+- Rebates → Reward mit Kostenbasis 0. Interne Umbuchungen Spot ↔ Fund werden ignoriert.
+- **Saldo-Abgleich:** Jede Zeile enthält den neuen Saldo. Fehlt Historie, wird sie sichtbar:
+  - fehlende Gutschrift → Anfangsbestand ohne Kaufpreis (Ø-Preis bleibt offen, nichts erfunden)
+  - fehlende Abbuchung bei Stablecoins → Ausgleich, bei anderen Coins → «Bitte zuordnen»
+- Mehrfach importieren ist sicher: Rohzeilen werden zusammengeführt, alles wird neu berechnet, deine Zuordnungen bleiben erhalten.
 
-- Spalten werden automatisch erkannt (Deutsch/Englisch), alles ist anpassbar. Die Zuordnung wird pro Plattform gespeichert.
-- Doppelte Transaktionen werden über Transaktions-ID bzw. Zeilen-Fingerabdruck erkannt und ignoriert.
-- Käufe in USDT werden mit dem historischen USDT/CHF-Kurs (CoinGecko) in CHF umgerechnet.
-- Unklare Zeilen (z. B. «Convert») landen unter **Bitte zuordnen**.
-- Nur CSV. XLSX zuerst als CSV speichern.
-- Die Vorlagen für Relai und BingX werden angepasst, sobald echte Beispiel-Exporte vorliegen.
+## Berechnung
 
-## 5. Berechnung
+Durchschnittskosten-Methode. Kauf erhöht Bestand und Kostenbasis (inkl. Gebühren), Verkauf bucht zum Ø-Preis aus. Ist ein Teil der Kostenbasis unbekannt, wird kein Ø-Preis und kein realisierter Gewinn berechnet; angezeigt wird «≈ Ø des bekannten Teils».
 
-Durchschnittskosten-Methode: Kauf erhöht Bestand und Kostenbasis (inkl. Gebühren), Verkauf bucht zum Ø-Preis aus und realisiert Gewinn/Verlust, Transfer ändert nichts, Reward hat Kostenbasis 0. Fehlt die Kaufhistorie, wird **kein** Ø-Preis erfunden.
+## Steuern
 
-## 6. Steuern
+Bestand per 31.12., 23:59 Uhr. Steuerkurse aus der ESTV-Kursliste (ICTax) eintragen oder Ersatzkurse laden. «Jahr abschliessen» friert den Snapshot ein. Bericht als PDF oder CSV. Organisationshilfe, keine Steuerberatung.
 
-Crypto-Bestand per 31.12., 23:59 Uhr aus allen Transaktionen. Steuerkurse aus der ESTV-Kursliste (ICTax) eintragen oder Ersatzkurse laden (markiert). «Jahr abschliessen» friert den Snapshot ein. Bericht als PDF (Drucken › PDF) oder CSV. Checkliste mit E-Tax-BL-Ziffern aus der Steuererklärung 2023, jährlich prüfen.
-
-Finance Vault ist eine Organisationshilfe, keine Steuerberatung.
-
-## 7. Stand und nächste Phasen
+## Stand
 
 | Phase | Inhalt | Stand |
 |---|---|---|
-| 1 Fundament | PIN, Verschlüsselung, Konten, CSV-Import, Duplikate, Ø-Preis, Live-Kurse, Dashboard, Ziele mit Konfetti | ✅ |
-| Extra | Rechnungen mit Status/Suche/Beleg, Crypto-Steuerbericht 31.12., Checkliste | ✅ Grundversion |
-| 2 Dokumente | Scanner mit Zuschnitt, OCR, Finance Inbox, Push-Dienst für Erinnerungen | offen |
+| 1 Fundament | PIN, Verschlüsselung, Konten, Import, Duplikate, Ø-Preis, Live-Kurse, Dashboard, Ziele | ✅ |
+| Extra | BingX-Kontoauszug mit Saldo-Abgleich, Rechnungen, Crypto-Steuerbericht | ✅ |
+| 2 Dokumente | Scanner, OCR, Finance Inbox, Push-Erinnerungen | offen |
 | 3 Steuern | Jahresabschluss mit Push, Steuerpaket, Steuerzahlungen, Archiv | offen |
-| 4 Automatik | Ledger-Adressen-Sync, Prüfung der Steuererklärung, BingX-API | offen |
+| 4 Automatik | Ledger-Sync, Prüfung Steuererklärung, BingX-API | offen |

@@ -12,17 +12,12 @@ export const emptyState = () => ({
   goals: [],          // Ziele mit Meilensteinen
   invoices: [],       // Rechnungen
   imports: {},        // Plattform -> { last, count, mapping }
+  raw: {},            // Rohdaten von Konto-Auszügen (z. B. BingX), für Neuberechnung
   coins: {},          // Symbol -> { id (CoinGecko), name, location }
   prices: {},         // Symbol -> { chf, change24h, at }
   pricesAt: null,
-  taxYears: {},       // Jahr -> { rates:{SYM:{chf,source}}, checklist:{}, closed, snapshot }
-  settings: {
-    name: 'Jorick',
-    cgKey: '',
-    defaultWallet: 'Ledger',
-    autoLockMin: 5,
-    canton: 'Basel-Landschaft',
-  },
+  taxYears: {},       // Jahr -> { rates, checklist, closed, snapshot }
+  settings: { name: 'Jorick', cgKey: '', defaultWallet: 'Ledger', autoLockMin: 5, canton: 'Basel-Landschaft' },
 });
 
 let state = emptyState();
@@ -48,13 +43,9 @@ export function demoState() {
   const s = emptyState();
   const d = (y, m, dd) => new Date(y, m - 1, dd, 10, 0).toISOString();
   const tx = (o) => s.transactions.push({ id: uid(), platform: 'Demo', fee: 0, note: '', extId: '', ...o });
-  // BTC-Sparplan Relai
-  let day = new Date(2026, 0, 6);
-  const btcPrices = [82000, 85500, 79000, 88000, 91000, 87000, 93500, 95000, 90500, 97000];
-  btcPrices.forEach((p, i) => {
-    const chf = 230;
-    tx({ date: new Date(day.getTime() + i * 14 * 864e5).toISOString(), type: 'buy', asset: 'BTC', amount: +(chf / p).toFixed(8), chf, platform: 'Relai' });
-  });
+  const day = new Date(2026, 0, 6);
+  [82000, 85500, 79000, 88000, 91000, 87000, 93500, 95000, 90500, 97000].forEach((p, i) =>
+    tx({ date: new Date(day.getTime() + i * 14 * 864e5).toISOString(), type: 'buy', asset: 'BTC', amount: +(230 / p).toFixed(8), chf: 230, platform: 'Relai' }));
   tx({ date: d(2026, 6, 1), type: 'transfer', asset: 'BTC', amount: 0.015, chf: 0, platform: 'Relai', to: 'Ledger' });
   tx({ date: d(2026, 2, 12), type: 'buy', asset: 'LINK', amount: 60, chf: 780, platform: 'BingX' });
   tx({ date: d(2026, 4, 3), type: 'buy', asset: 'LINK', amount: 70, chf: 1020, platform: 'BingX' });
@@ -80,12 +71,12 @@ export function demoState() {
 }
 
 export function defaultGoals(s) {
-  const notgroschen = (s.accounts || []).find((a) => a.tag === 'notgroschen');
+  const ng = (s.accounts || []).find((a) => a.tag === 'notgroschen');
   const g = [
     { id: uid(), name: 'Gesamtvermögen', kind: 'networth', unit: 'CHF', color: 'gold', milestones: [25000, 50000, 75000, 100000, 150000, 250000, 500000, 1000000], reached: {} },
     { id: uid(), name: 'Bitcoin', kind: 'asset', asset: 'BTC', unit: 'BTC', color: 'orange', milestones: [0.01, 0.05, 0.1, 0.25, 0.5, 1], reached: {} },
   ];
-  if (notgroschen) g.push({ id: uid(), name: 'Notgroschen', kind: 'account', accountId: notgroschen.id, unit: 'CHF', color: 'green', milestones: [7000], reached: {} });
+  if (ng) g.push({ id: uid(), name: 'Notgroschen', kind: 'account', accountId: ng.id, unit: 'CHF', color: 'green', milestones: [7000], reached: {} });
   g.push({ id: uid(), name: 'Säule 3a', kind: 'category', category: 'pillar3a', unit: 'CHF', color: 'teal', milestones: [25000, 50000, 100000], reached: {} });
   return g;
 }

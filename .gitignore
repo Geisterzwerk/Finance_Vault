@@ -1,6 +1,7 @@
-# Backups enthalten (verschlüsselte) Finanzdaten – nie auf GitHub laden!
+# Finanzdaten nie auf GitHub laden!
 *Backup*.json
 *backup*.json
 *.csv
+*.xlsx
 .DS_Store
 Thumbs.db

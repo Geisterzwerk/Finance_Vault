@@ -9,18 +9,18 @@ export const TYPES = {
   buy: { l: 'Kauf', c: 'green' },
   sell: { l: 'Verkauf', c: 'red' },
   transfer: { l: 'Transfer', c: 'blue' },
-  reward: { l: 'Reward / Staking', c: 'purple' },
+  reward: { l: 'Reward / Rebate', c: 'purple' },
   fee: { l: 'Gebühr', c: 'grey' },
   opening: { l: 'Anfangsbestand', c: 'teal' },
   review: { l: 'Bitte zuordnen', c: 'amber' },
 };
 
 export const ACCOUNT_KINDS = {
-  bank: { l: 'Bank & Cash', group: 'cash', color: 'mut' },
-  cash: { l: 'Bargeld', group: 'cash', color: 'mut' },
-  securities: { l: 'Wertschriften / ETF', group: 'securities', color: 'blue' },
-  pillar3a: { l: 'Säule 3a', group: 'pillar3a', color: 'teal' },
-  liability: { l: 'Verbindlichkeit', group: 'liability', color: 'red' },
+  bank: { l: 'Bank & Cash', group: 'cash' },
+  cash: { l: 'Bargeld', group: 'cash' },
+  securities: { l: 'Wertschriften / ETF', group: 'securities' },
+  pillar3a: { l: 'Säule 3a', group: 'pillar3a' },
+  liability: { l: 'Verbindlichkeit', group: 'liability' },
 };
 
 const EPS = 1e-10;
@@ -31,11 +31,11 @@ export function holdings(until = null) {
   const end = until ? new Date(until).getTime() : Infinity;
   const txs = s.transactions
     .filter((t) => t.type !== 'review' && new Date(t.date).getTime() <= end)
-    .sort((a, b) => new Date(a.date) - new Date(b.date));
+    .sort((a, b) => new Date(a.date) - new Date(b.date) || (a.seq || 0) - (b.seq || 0));
   const map = {};
   const h = (a) => (map[a] ||= {
-    asset: a, qty: 0, cost: 0, realized: 0, fees: 0, invested: 0, bought: 0, sold: 0,
-    unknownCost: false, negative: false, platforms: new Set(), lastLocation: null, txCount: 0, missingChf: 0,
+    asset: a, qty: 0, cost: 0, unknownQty: 0, realized: 0, realizedUnknown: false, fees: 0, bought: 0, sold: 0,
+    negative: false, platforms: new Set(), lastLocation: null, txCount: 0, missingChf: 0,
   });
   for (const t of txs) {
     const x = h(t.asset);
@@ -47,48 +47,59 @@ export function holdings(until = null) {
     switch (t.type) {
       case 'buy':
         x.qty += amt; x.bought += amt;
-        if (chf == null) { x.unknownCost = true; x.missingChf++; } else { x.cost += chf + fee; x.invested += chf + fee; }
+        if (chf == null) { x.unknownQty += amt; x.missingChf++; } else x.cost += chf + fee;
         x.fees += fee;
         if (!x.lastLocation) x.lastLocation = t.platform;
         break;
       case 'opening':
         x.qty += amt;
-        if (chf == null) x.unknownCost = true; else { x.cost += chf; x.invested += chf; }
+        if (chf == null) x.unknownQty += amt; else x.cost += chf;
         if (!x.lastLocation) x.lastLocation = t.platform;
         break;
       case 'reward':
         x.qty += amt; // Kostenbasis 0
         break;
       case 'sell': {
-        if (amt > x.qty + EPS) x.negative = true;
+        if (amt > x.qty + 1e-8) x.negative = true;
         const q = Math.min(amt, x.qty);
-        const avg = x.qty > EPS ? x.cost / x.qty : 0;
-        const costOut = avg * q;
-        if (chf == null) { x.missingChf++; } else x.realized += (chf - fee) - costOut;
-        x.fees += fee;
-        x.qty -= q; x.cost -= costOut; x.sold += amt;
+        if (x.unknownQty > EPS || chf == null) {
+          // Kostenbasis teilweise unbekannt: kein Gewinn berechnen, anteilig ausbuchen
+          x.realizedUnknown = true;
+          const share = x.qty > EPS ? q / x.qty : 0;
+          x.cost -= x.cost * share; x.unknownQty -= x.unknownQty * share;
+          if (chf == null) x.missingChf++;
+        } else {
+          const costOut = x.qty > EPS ? (x.cost / x.qty) * q : 0;
+          x.realized += (chf - fee) - costOut;
+          x.cost -= costOut;
+        }
+        x.fees += fee; x.qty -= q; x.sold += amt;
         break;
       }
       case 'fee': {
         const q = Math.min(amt, x.qty);
+        if (x.qty > EPS) x.unknownQty -= x.unknownQty * (q / x.qty);
         x.qty -= q; // Kosten bleiben -> Ø-Preis steigt
         x.fees += chf || 0;
         break;
       }
       case 'transfer':
-        if (fee) { // Netzwerkgebühr in Coin
-          const q = Math.min(fee, x.qty); x.qty -= q;
-        }
+        if (fee) { const q = Math.min(fee, x.qty); x.qty -= q; }
         if (t.to) x.lastLocation = t.to;
         break;
     }
-    if (x.qty < EPS) { x.qty = Math.max(0, x.qty); if (x.qty === 0) x.cost = 0; }
+    if (x.qty < EPS) { x.qty = 0; x.cost = 0; x.unknownQty = 0; }
   }
   for (const x of Object.values(map)) {
-    x.avg = x.qty > EPS && !x.unknownCost ? x.cost / x.qty : null;
+    const unknown = x.unknownQty > Math.max(EPS, x.qty * 1e-6);
+    x.avg = x.qty > EPS && !unknown ? x.cost / x.qty : null;
+    x.unknownShare = x.qty > EPS ? Math.min(1, x.unknownQty / x.qty) : 0;
+    // Ø-Preis des bekannten Teils (nur als Hinweis, nicht für Gewinn/Verlust)
+    const knownQty = x.qty - x.unknownQty;
+    x.avgKnown = unknown && knownQty > EPS && x.cost > 0 ? x.cost / knownQty : null;
     x.location = (s.coins[x.asset] && s.coins[x.asset].location) || x.lastLocation || '-';
     x.platforms = [...x.platforms];
-    x.quality = x.negative || x.unknownCost ? 'missing' : x.missingChf ? 'check' : 'ok';
+    x.quality = x.negative || unknown ? 'missing' : x.missingChf ? 'check' : 'ok';
   }
   return map;
 }
@@ -96,8 +107,7 @@ export function holdings(until = null) {
 // Mit Live-Kursen kombinieren
 export function portfolio() {
   const s = S();
-  const map = holdings();
-  const list = Object.values(map).filter((x) => x.qty > EPS || x.realized);
+  const list = Object.values(holdings()).filter((x) => x.qty > 1e-8 || Math.abs(x.realized) > 0.005);
   let total = 0, cost = 0, unreal = 0, realized = 0;
   for (const x of list) {
     const p = s.prices[x.asset];
@@ -111,22 +121,18 @@ export function portfolio() {
     realized += x.realized;
   }
   list.sort((a, b) => (b.value || 0) - (a.value || 0));
-  return { list, total, unreal, unrealPct: cost > 0 ? (unreal / cost) * 100 : null, realized, held: list.filter((x) => x.qty > EPS) };
+  return { list, total, unreal, unrealPct: cost > 0 ? (unreal / cost) * 100 : null, realized, held: list.filter((x) => x.qty > 1e-8) };
 }
 
 export function netWorth() {
   const s = S();
   const pf = portfolio();
   const g = { crypto: pf.total, securities: 0, pillar3a: 0, cash: 0, liability: 0 };
-  for (const a of s.accounts) {
-    const grp = (ACCOUNT_KINDS[a.kind] || ACCOUNT_KINDS.bank).group;
-    g[grp] += Number(a.value) || 0;
-  }
+  for (const a of s.accounts) g[(ACCOUNT_KINDS[a.kind] || ACCOUNT_KINDS.bank).group] += Number(a.value) || 0;
   const assets = g.crypto + g.securities + g.pillar3a + g.cash;
   return { ...g, assets, net: assets - g.liability, pf };
 }
 
-// Aktueller Wert eines Ziels
 export function goalValue(goal, nw = netWorth()) {
   const s = S();
   switch (goal.kind) {
@@ -144,31 +150,24 @@ export function goalProgress(goal, nw) {
   const ms = [...goal.milestones].sort((a, b) => a - b);
   const reachedCount = ms.filter((m) => goal.reached[m]).length;
   const next = ms.find((m) => !goal.reached[m] && v < m) ?? ms.find((m) => !goal.reached[m]) ?? null;
-  const prev = [...ms].reverse().find((m) => m <= v) || 0;
-  return { value: v, next, prev, pct: next ? Math.min(1, v / next) : 1, reachedCount, total: ms.length, done: !next };
+  return { value: v, next, pct: next ? Math.min(1, v / next) : 1, reachedCount, total: ms.length, done: !next };
 }
 
-// Neu erreichte Meilensteine finden (Konfetti nur beim ersten Überschreiten)
+// Neu erreichte Meilensteine (Konfetti nur beim ersten Überschreiten).
+// Ohne Kurse wird Vermögen/Crypto nicht geprüft, damit nichts falsch ausgelöst wird.
 export function checkMilestones() {
   const s = S();
   const nw = netWorth();
   const fresh = [];
   for (const g of s.goals) {
+    if ((g.kind === 'networth' || g.kind === 'crypto') && !s.pricesAt && s.transactions.length) continue;
     const v = goalValue(g, nw);
     for (const m of g.milestones) {
-      if (!g.reached[m] && v >= m) {
-        g.reached[m] = new Date().toISOString();
-        fresh.push({ goal: g, value: m });
-      }
+      if (!g.reached[m] && v >= m) { g.reached[m] = new Date().toISOString(); fresh.push({ goal: g, value: m }); }
     }
   }
   return fresh;
 }
 
-// Datenqualitäts-Zähler
-export function reviewCount() { return S().transactions.filter((t) => t.type === 'review').length; }
-
-// Bestand per Stichtag (31.12., 23:59:59)
-export function yearEndHoldings(year) {
-  return holdings(new Date(year, 11, 31, 23, 59, 59).toISOString());
-}
+export const reviewCount = () => S().transactions.filter((t) => t.type === 'review').length;
+export const yearEndHoldings = (year) => holdings(new Date(year, 11, 31, 23, 59, 59).toISOString());

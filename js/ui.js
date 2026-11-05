@@ -10,8 +10,7 @@ const grp = (s) => s.replace(/\B(?=(\d{3})+(?!\d))/g, "'");
 export function chf(v, dec = 0, sign = false) {
   if (v == null || !Number.isFinite(v)) return '–';
   const n = Math.abs(v).toFixed(dec).split('.');
-  const s = grp(n[0]) + (n[1] ? '.' + n[1] : '');
-  return `${v < 0 ? '- ' : sign && v > 0 ? '+ ' : ''}CHF ${s}`;
+  return `${v < 0 ? '- ' : sign && v > 0 ? '+ ' : ''}CHF ${grp(n[0])}${n[1] ? '.' + n[1] : ''}`;
 }
 export function nr(v, dec = 2) {
   if (v == null || !Number.isFinite(v)) return '–';
@@ -21,8 +20,7 @@ export function nr(v, dec = 2) {
 export function qty(v) {
   if (v == null) return '–';
   const a = Math.abs(v);
-  const d = a >= 1000 ? 2 : a >= 1 ? 4 : 8;
-  return nr(v, d).replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '');
+  return nr(v, a >= 1000 ? 2 : a >= 1 ? 4 : 8).replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '');
 }
 export function price(v) {
   if (v == null) return '–';
@@ -41,15 +39,10 @@ export const isoDay = (d) => { d = new Date(d); return `${d.getFullYear()}-${p2(
 export function ago(d) {
   if (!d) return 'nie';
   const days = Math.floor((Date.now() - new Date(d)) / 864e5);
-  if (days <= 0) return 'heute';
-  if (days === 1) return 'gestern';
-  return `vor ${days} Tagen`;
+  return days <= 0 ? 'heute' : days === 1 ? 'gestern' : `vor ${days} Tagen`;
 }
 export const daysUntil = (d) => Math.ceil((new Date(d + 'T23:59:59') - Date.now()) / 864e5);
-export function greeting() {
-  const h = new Date().getHours();
-  return h < 11 ? 'Guten Morgen' : h < 17 ? 'Guten Tag' : 'Guten Abend';
-}
+export const greeting = () => { const h = new Date().getHours(); return h < 11 ? 'Guten Morgen' : h < 17 ? 'Guten Tag' : 'Guten Abend'; };
 const WD = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
 const MO = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
 export const longDate = (d = new Date()) => `${WD[d.getDay()]}, ${d.getDate()}. ${MO[d.getMonth()]} ${d.getFullYear()}`;
@@ -99,7 +92,7 @@ export function download(name, content, type = 'application/json') {
 
 // ---------- Bausteine ----------
 export const bar = (p, color = 'gold') => `<div class="bar"><i class="${color}" style="width:${Math.max(0, Math.min(100, p * 100)).toFixed(1)}%"></i></div>`;
-export const icon = (k) => ({ ok: '<span class="ic ok">✓</span>', warn: '<span class="ic warn">!</span>', bad: '<span class="ic bad">✕</span>', dot: '<span class="ic dot"></span>' }[k] || '');
+export const icon = (k) => ({ ok: '<span class="ic ok">✓</span>', warn: '<span class="ic warn">!</span>', bad: '<span class="ic bad">✕</span>' }[k] || '');
 export function chips(name, opts, sel) {
   return `<div class="chips" data-chips="${name}">${opts.map(([v, l]) => `<button type="button" class="chip ${String(v) === String(sel) ? 'sel' : ''}" data-val="${esc(v)}">${esc(l)}</button>`).join('')}</div>`;
 }
@@ -117,7 +110,7 @@ export function confetti(ms = 3200) {
   const c = document.createElement('canvas'); c.className = 'confetti';
   document.body.appendChild(c);
   const ctx = c.getContext('2d'); const dpr = devicePixelRatio || 1;
-  const resize = () => { c.width = innerWidth * dpr; c.height = innerHeight * dpr; }; resize();
+  c.width = innerWidth * dpr; c.height = innerHeight * dpr;
   const cols = ['#C9A45C', '#E8CD96', '#3FB37F', '#588CDC', '#9678D2', '#E05D5D', '#F4EFE4', '#46AAB4'];
   const P = Array.from({ length: 180 }, () => ({
     x: Math.random() * c.width, y: -Math.random() * c.height * 0.6, w: (6 + Math.random() * 6) * dpr, h: (10 + Math.random() * 8) * dpr,
