@@ -153,3 +153,7 @@ body { display: flex; flex-direction: column; height: 100dvh; padding-bottom: 0;
 .tabbar { position: relative; flex: none; }
 #toast { bottom: calc(96px + var(--safe-b)); }
 @media print { html, body { height: auto; overflow: visible; display: block; } }
+
+.cropstage { padding: 4px 22px 6px; display: flex; justify-content: center; touch-action: none; overscroll-behavior: contain; -webkit-user-select: none; user-select: none; }
+.cropstage canvas { touch-action: none; display: block; }
+.cropstage img { max-width: 100%; max-height: 58vh; border-radius: 10px; display: block; }

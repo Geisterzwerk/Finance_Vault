@@ -10,132 +10,13 @@ import * as LG from './ledger.js';
 import * as TP from './taxpack.js';
 import * as BX from './bingx.js';
 import { esc, chf, qty, dmy, ago, isoDay, bar, icon, openSheet, closeSheet, closeAll, toast, download, chips, chipVal, rerender } from './ui.js';
+ import { openScanner } from './scanui.js';
+export { openScanner };
 
 const CATS = ['Einkommen', 'Vorsorge', 'Vermögen', 'Steuern', 'Studium', 'Gesundheit', 'Spenden', 'Mobilität', 'Versicherung', 'Kommunikation', 'Wohnen', 'Abos', 'Sonstiges'];
 const yearNow = () => new Date().getFullYear();
 
-// =====================================================================
-// SCANNER
-// =====================================================================
-export function openScanner() {
-  const st = { pages: [], raw: [], img: null, corners: null, mode: 'gray', step: 'source' };
-  let cv = null; let scale = 1; let drag = -1;
 
-  const draw = () => {
-    if (!cv || !st.img) return;
-    const ctx = cv.getContext('2d');
-    ctx.drawImage(st.img, 0, 0, cv.width, cv.height);
-    ctx.fillStyle = 'rgba(12,22,38,.45)'; ctx.beginPath(); ctx.rect(0, 0, cv.width, cv.height);
-    const q = st.corners.map(([x, y]) => [x * scale, y * scale]);
-    ctx.moveTo(q[0][0], q[0][1]); for (let i = 3; i >= 0; i--) ctx.lineTo(q[i][0], q[i][1]); ctx.closePath(); ctx.fill('evenodd');
-    ctx.strokeStyle = '#C9A45C'; ctx.lineWidth = 3; ctx.beginPath(); q.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.stroke();
-    q.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x, y, 13, 0, 7); ctx.fillStyle = '#C9A45C'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#0C1626'; ctx.stroke(); });
-  };
-
-  const render = () => {
-    if (st.step === 'source') return `
-      <div class="small mut">Fotografiere einen Brief oder eine Rechnung, oder wähle eine Datei (PDF aus Mail). Texterkennung und QR-Rechnung laufen nur auf deinem Gerät.</div>
-      <label class="btn gold block big mt">📷 Foto aufnehmen<input type="file" accept="image/*" capture="environment" data-src="cam" hidden></label>
-      <label class="btn line block">🖼 Foto aus Mediathek<input type="file" accept="image/*" data-src="img" hidden></label>
-      <label class="btn line block">📄 PDF / Datei wählen<input type="file" accept="application/pdf,image/*" data-src="file" hidden></label>
-      ${st.pages.length ? `<div class="note">${st.pages.length} Seite(n) erfasst</div><button class="btn gold block" data-act="finish">Fertig – erkennen</button>` : ''}`;
-    if (st.step === 'crop') return `
-      <div class="small mut">Ecken ziehen, bis nur das Dokument im Rahmen ist.</div>
-      <div class="cropwrap"><canvas id="cv"></canvas></div>
-      ${chips('mode', [['gray', 'Dokument'], ['bw', 'Schwarz/Weiss'], ['color', 'Farbe']], st.mode)}
-      <div class="grid2"><button class="btn line" data-act="fullimg">Ganzes Bild</button><button class="btn line" data-act="auto">Automatisch</button></div>
-      <button class="btn gold block big" data-act="crop">Zuschneiden</button>`;
-    if (st.step === 'page') return `
-      <div class="lbl">Seite ${st.pages.length}</div>
-      <div class="cropwrap"><img src="${st.pages[st.pages.length - 1].toDataURL('image/jpeg', 0.6)}" alt="Seite"></div>
-      <div class="grid2 mt"><label class="btn line">＋ Weitere Seite<input type="file" accept="image/*" capture="environment" data-src="cam" hidden></label><button class="btn line" data-act="redo">Neu aufnehmen</button></div>
-      <button class="btn gold block big" data-act="finish">Fertig – erkennen</button>`;
-    if (st.step === 'work') return `<div class="card center"><div class="serif big2">Erkenne Dokument …</div><div class="small mut" data-prog>${esc(st.prog || '')}</div>${bar(st.pct || 0)}</div>
-      <div class="small mut">Beim ersten Mal werden die Erkennungs-Bibliotheken geladen (Internet nötig), danach geht es auch offline.</div>`;
-    return '';
-  };
-
-  const startCrop = async (file) => {
-    try {
-      const im = await SC.loadImage(file);
-      st.img = SC.toCanvas(im, 2200); st.corners = SC.detectCorners(st.img); st.step = 'crop'; rerender();
-    } catch (e) { toast('Bild nicht lesbar'); }
-  };
-
-  const finish = async (pdfFile) => {
-    st.step = 'work'; rerender();
-    const prog = (t, p) => { st.prog = t; st.pct = p; const el = document.querySelector('[data-prog]'); if (el) el.textContent = t; const b = document.querySelector('#sheet-body .bar i'); if (b) b.style.width = (p * 100) + '%'; };
-    let blob, text = '', qr = null, name;
-    try {
-      if (pdfFile) {
-        blob = pdfFile; name = pdfFile.name;
-        if (pdfFile.type === 'application/pdf') { prog('Lese PDF-Text …', 0.3); try { text = await TP.pdfText(new Uint8Array(await pdfFile.arrayBuffer())); } catch (e) { text = ''; } }
-        else { const im = SC.toCanvas(await SC.loadImage(pdfFile), 2000); prog('Suche QR-Code …', 0.2); qr = SC.parseSwissQR(await SC.readQR(im)); prog('Texterkennung …', 0.3); try { text = await SC.ocr(im, (p) => prog('Texterkennung …', 0.3 + p * 0.7)); } catch (e) { toast('Texterkennung offline nicht verfügbar'); } }
-      } else {
-        prog('Erstelle PDF …', 0.1);
-        blob = await SC.canvasesToPDF(st.pages); name = `Scan_${isoDay(new Date())}.pdf`;
-        prog('Suche QR-Rechnung …', 0.2);
-        for (const c of st.raw) { qr = SC.parseSwissQR(await SC.readQR(c)); if (qr) break; }
-        try {
-          for (let i = 0; i < Math.min(3, st.pages.length); i++) text += (await SC.ocr(st.pages[i], (p) => prog(`Texterkennung Seite ${i + 1} …`, 0.25 + ((i + p) / Math.min(3, st.pages.length)) * 0.75))) + '\n';
-        } catch (e) { toast('Texterkennung offline nicht verfügbar – Felder bitte selbst ausfüllen'); }
-      }
-    } catch (e) { console.error(e); toast('Fehler bei der Erkennung'); }
-    const f = SC.extractFields(text); const cls = SC.classify(text, qr);
-    const draft = {
-      kind: cls.kind, issuer: (qr && qr.creditor) || f.issuer || '', title: cls.title || '', number: f.number || '',
-      amount: qr && qr.amount != null ? qr.amount : f.amount ?? '', due: f.due || '', date: f.date || isoDay(new Date()),
-      category: cls.category, tax: cls.tax, ziffer: cls.ziffer, taxKind: cls.taxKind || '', taxYear: SC.guessTaxYear(text) || yearNow() - 1,
-      year: SC.guessTaxYear(text) || new Date(f.date || Date.now()).getFullYear(), iban: qr ? qr.iban : '', reference: qr ? qr.reference : '',
-      text: text.slice(0, 6000), qr: !!qr,
-    };
-    const fid = uid(); await putFile(fid, new File([blob], name, { type: blob.type || 'application/pdf' }));
-    closeSheet();
-    openResult({ ...draft, file: fid, fileName: name });
-  };
-
-  openSheet({
-    title: 'Dokument scannen', render,
-    bind: (el) => {
-      el.querySelectorAll('[data-src]').forEach((inp) => inp.addEventListener('change', () => {
-        const f = inp.files[0]; inp.value = ''; if (!f) return;
-        if (inp.dataset.src === 'file' && f.type === 'application/pdf') return finish(f);
-        if (inp.dataset.src === 'file' && !f.type.startsWith('image/')) return finish(f);
-        startCrop(f);
-      }));
-      cv = el.querySelector('#cv');
-      if (cv) {
-        const wrap = el.querySelector('.cropwrap');
-        const w = Math.min(wrap.clientWidth || 340, 680); scale = w / st.img.width;
-        cv.width = w; cv.height = Math.round(st.img.height * scale); draw();
-        const pos = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * (cv.width / r.width) / scale, (e.clientY - r.top) * (cv.height / r.height) / scale]; };
-        cv.addEventListener('pointerdown', (e) => {
-          const [x, y] = pos(e); let best = 1e9;
-          st.corners.forEach(([cx, cy], i) => { const d = Math.hypot(cx - x, cy - y); if (d < best) { best = d; drag = i; } });
-          if (best * scale > 60) drag = -1; else cv.setPointerCapture(e.pointerId);
-        });
-        cv.addEventListener('pointermove', (e) => { if (drag < 0) return; e.preventDefault(); const [x, y] = pos(e); st.corners[drag] = [Math.max(0, Math.min(st.img.width, x)), Math.max(0, Math.min(st.img.height, y))]; draw(); });
-        cv.addEventListener('pointerup', () => { drag = -1; });
-        cv.style.touchAction = 'none';
-      }
-      el.addEventListener('click', async (e) => {
-        const ch = e.target.closest('[data-chips=mode] .chip'); if (ch) { st.mode = ch.dataset.val; el.querySelectorAll('[data-chips=mode] .chip').forEach((c) => c.classList.toggle('sel', c === ch)); return; }
-        const b = e.target.closest('[data-act]'); if (!b) return;
-        const a = b.dataset.act;
-        if (a === 'fullimg') { st.corners = [[0, 0], [st.img.width, 0], [st.img.width, st.img.height], [0, st.img.height]]; draw(); }
-        if (a === 'auto') { st.corners = SC.detectCorners(st.img); draw(); }
-        if (a === 'crop') {
-          b.disabled = true; b.textContent = 'Zuschneiden …'; await new Promise((r) => setTimeout(r, 30));
-          const w = SC.warp(st.img, st.corners);
-          const rawCopy = document.createElement('canvas'); rawCopy.width = w.width; rawCopy.height = w.height; rawCopy.getContext('2d').drawImage(w, 0, 0);
-          st.raw.push(rawCopy); st.pages.push(SC.enhance(w, st.mode)); st.step = 'page'; rerender();
-        }
-        if (a === 'redo') { st.pages.pop(); st.raw.pop(); st.step = 'source'; rerender(); }
-        if (a === 'finish') finish();
-      });
-    },
-  });
-}
 
 // ---------- Ergebnis prüfen und ablegen ----------
 export function openResult(d, inboxDoc = null) {

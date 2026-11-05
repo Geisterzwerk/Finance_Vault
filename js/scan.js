@@ -1,7 +1,8 @@
 // =====================================================================
 // scan.js – Dokument-Scanner
-// Foto -> Ecken erkennen (anpassbar) -> Perspektive korrigieren ->
-// Kontrast verbessern -> PDF erstellen -> QR-Rechnung + Text erkennen ->
+// Foto -> Dokument automatisch finden (Kanten + Hough-Linien, funktioniert
+// auch bei hellem Papier auf hellem Grund) -> Perspektive korrigieren ->
+// Kontrast verbessern -> PDF -> QR-Rechnung + Text erkennen ->
 // Kategorie und Steuerrelevanz vorschlagen.
 // =====================================================================
 import * as LIB from './libs.js';
@@ -16,47 +17,182 @@ export function loadImage(file) {
   });
 }
 export function toCanvas(img, maxSide = 2200) {
-  const k = Math.min(1, maxSide / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
+  const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+  const k = Math.min(1, maxSide / Math.max(W, H));
   const c = document.createElement('canvas');
-  c.width = Math.round((img.naturalWidth || img.width) * k); c.height = Math.round((img.naturalHeight || img.height) * k);
+  c.width = Math.round(W * k); c.height = Math.round(H * k);
   c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
   return c;
 }
 
-// ---------- Ecken automatisch schätzen (helles Papier auf dunklerem Grund) ----------
-export function detectCorners(canvas) {
+// =====================================================================
+// Automatische Dokumenterkennung
+// 1. verkleinern, Graustufen, weichzeichnen
+// 2. Kanten (Sobel) mit adaptiver Schwelle -> auch schwache Kanten (weiss auf weiss)
+// 3. Hough-Transformation -> dominante Linien
+// 4. beste Kombination aus 2 waagrechten + 2 senkrechten Linien suchen,
+//    bewertet nach Kantenunterstützung entlang der 4 Seiten
+// Rückgabe: { corners, confidence } oder null
+// =====================================================================
+export function detectDocument(canvas) {
   const W = canvas.width, H = canvas.height;
-  const k = 320 / Math.max(W, H);
-  const w = Math.max(8, Math.round(W * k)), h = Math.max(8, Math.round(H * k));
+  const k = 420 / Math.max(W, H);
+  const w = Math.max(16, Math.round(W * k)), h = Math.max(16, Math.round(H * k));
   const c = document.createElement('canvas'); c.width = w; c.height = h;
-  const x = c.getContext('2d'); x.drawImage(canvas, 0, 0, w, h);
+  const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(canvas, 0, 0, w, h);
   const d = x.getImageData(0, 0, w, h).data;
-  const g = new Float32Array(w * h); const hist = new Array(256).fill(0);
-  for (let i = 0; i < w * h; i++) { const v = (d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114) | 0; g[i] = v; hist[v]++; }
-  // Otsu-Schwelle
-  let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
-  let sB = 0, wB = 0, best = 0, thr = 128;
-  for (let t = 0; t < 256; t++) {
-    wB += hist[t]; if (!wB) continue; const wF = w * h - wB; if (!wF) break;
-    sB += t * hist[t]; const mB = sB / wB, mF = (sum - sB) / wF; const v = wB * wF * (mB - mF) ** 2;
-    if (v > best) { best = v; thr = t; }
+  // Graustufen + Farbsättigung (hilft bei getöntem Hintergrund)
+  let g = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2];
+    const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+    g[i] = 0.299 * r + 0.587 * gg + 0.114 * b - 0.35 * (mx - mn);
   }
-  let n = 0; let tl = [0, 0, Infinity], tr = [0, 0, -Infinity], br = [0, 0, -Infinity], bl = [0, 0, Infinity];
-  const m = 2; // Rand ignorieren
-  for (let yy = m; yy < h - m; yy++) for (let xx = m; xx < w - m; xx++) {
-    if (g[yy * w + xx] <= thr) continue; n++;
-    const s = xx + yy, df = xx - yy;
-    if (s < tl[2]) tl = [xx, yy, s]; if (s > br[2]) br = [xx, yy, s];
-    if (df > tr[2]) tr = [xx, yy, df]; if (df < bl[2]) bl = [xx, yy, df];
+  g = blur(blur(g, w, h), w, h);
+  // Sobel
+  const mag = new Float32Array(w * h), ang = new Float32Array(w * h);
+  for (let yy = 1; yy < h - 1; yy++) for (let xx = 1; xx < w - 1; xx++) {
+    const i = yy * w + xx;
+    const gx = -g[i - w - 1] - 2 * g[i - 1] - g[i + w - 1] + g[i - w + 1] + 2 * g[i + 1] + g[i + w + 1];
+    const gy = -g[i - w - 1] - 2 * g[i - w] - g[i - w + 1] + g[i + w - 1] + 2 * g[i + w] + g[i + w + 1];
+    mag[i] = Math.hypot(gx, gy); ang[i] = Math.atan2(gy, gx);
   }
-  const frac = n / (w * h);
-  if (frac < 0.12 || frac > 0.93) return full(W, H);
-  const pts = [tl, tr, br, bl].map(([px, py]) => [px / k, py / k]);
-  const area = Math.abs(polyArea(pts));
-  return area < W * H * 0.12 ? full(W, H) : pts;
+  // adaptive Schwelle: oberste ~7 % der Kanten
+  const sorted = Array.from(mag).filter((v) => v > 0).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const median = sorted[Math.floor(sorted.length * 0.5)] || 0;
+  const thr = Math.max(6, sorted[Math.floor(sorted.length * 0.93)] || 0, median * 3.2);
+  // Hough
+  const NT = 180, diag = Math.ceil(Math.hypot(w, h)), NR = diag * 2 + 1;
+  const cosT = new Float32Array(NT), sinT = new Float32Array(NT);
+  for (let t = 0; t < NT; t++) { cosT[t] = Math.cos((t * Math.PI) / NT); sinT[t] = Math.sin((t * Math.PI) / NT); }
+  const acc = new Float32Array(NT * NR);
+  const border = 3;
+  for (let yy = border; yy < h - border; yy++) for (let xx = border; xx < w - border; xx++) {
+    const i = yy * w + xx; const m = mag[i]; if (m < thr) continue;
+    let t0 = Math.round(((ang[i] + Math.PI) % Math.PI) / Math.PI * NT) % NT; // Normale = Gradientrichtung
+    const wgt = Math.min(3, m / thr);
+    for (let dt = -6; dt <= 6; dt++) {
+      const t = (t0 + dt + NT) % NT;
+      const r = Math.round(xx * cosT[t] + yy * sinT[t]) + diag;
+      acc[t * NR + r] += wgt;
+    }
+  }
+  // Peaks (lokale Maxima)
+  const peaks = [];
+  for (let t = 0; t < NT; t++) for (let r = 2; r < NR - 2; r++) {
+    const v = acc[t * NR + r]; if (v < 8) continue;
+    let isMax = true;
+    for (let dt = -3; dt <= 3 && isMax; dt++) for (let dr = -4; dr <= 4; dr++) {
+      if (!dt && !dr) continue;
+      const tt = t + dt, rr = r + dr;
+      if (tt < 0 || tt >= NT || rr < 0 || rr >= NR) continue;
+      if (acc[tt * NR + rr] > v) { isMax = false; break; }
+    }
+    if (isMax) peaks.push({ t, r: r - diag, v });
+  }
+  peaks.sort((a, b) => b.v - a.v);
+  const horiz = [], vert = [];
+  for (const p of peaks) {
+    const deg = (p.t * 180) / NT;
+    if (deg > 55 && deg < 125) { if (horiz.length < 10) horiz.push(p); }
+    else if (deg < 35 || deg > 145) { if (vert.length < 10) vert.push(p); }
+    if (horiz.length >= 10 && vert.length >= 10) break;
+  }
+  if (horiz.length < 2 || vert.length < 2) return null;
+  const line = (p) => ({ c: cosT[p.t], s: sinT[p.t], r: p.r });
+  const inter = (a, b) => {
+    const det = a.c * b.s - a.s * b.c; if (Math.abs(det) < 1e-6) return null;
+    return [(a.r * b.s - b.r * a.s) / det, (a.c * b.r - b.c * a.r) / det];
+  };
+  // Kantenunterstützung entlang einer Strecke: starke Kante, Richtung passt
+  // zur Seite, und Helligkeitswechsel immer in dieselbe Richtung (innen/aussen)
+  const support = (p, q, cxm, cym) => {
+    const n = 48; let hit = 0, inward = 0;
+    const ex = q[0] - p[0], ey = q[1] - p[1]; const len = Math.hypot(ex, ey) || 1;
+    let nx = -ey / len, ny = ex / len;
+    const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2;
+    if ((cxm - mx) * nx + (cym - my) * ny < 0) { nx = -nx; ny = -ny; } // Normale zeigt nach innen
+    for (let s = 0; s < n; s++) {
+      const f = (s + 0.5) / n; const cx = p[0] + ex * f, cy = p[1] + ey * f;
+      let best = 0, bi = -1;
+      for (let o = -2; o <= 2; o++) {
+        const px = Math.round(cx + nx * o), py = Math.round(cy + ny * o);
+        if (px < 1 || py < 1 || px >= w - 1 || py >= h - 1) continue;
+        const i = py * w + px; if (mag[i] > best) { best = mag[i]; bi = i; }
+      }
+      if (bi < 0 || best < thr * 0.55) continue;
+      const gx = Math.cos(ang[bi]), gy = Math.sin(ang[bi]);
+      const dot = gx * nx + gy * ny;
+      if (Math.abs(dot) < 0.9) continue; // Gradient senkrecht zur Seite (±25°)
+      hit++; if (dot > 0) inward++;
+    }
+    return { s: hit / n, pol: hit ? inward / hit : 0.5 };
+  };
+  let best = null;
+  for (let a = 0; a < horiz.length; a++) for (let b = a + 1; b < horiz.length; b++) {
+    const h1 = line(horiz[a]), h2 = line(horiz[b]);
+    const top = horiz[a].r * sinT[horiz[a].t] < horiz[b].r * sinT[horiz[b].t] ? [h1, h2] : [h2, h1];
+    for (let c1 = 0; c1 < vert.length; c1++) for (let c2 = c1 + 1; c2 < vert.length; c2++) {
+      const v1 = line(vert[c1]), v2 = line(vert[c2]);
+      const p1 = inter(top[0], v1), p2 = inter(top[0], v2), p3 = inter(top[1], v2), p4 = inter(top[1], v1);
+      if (!p1 || !p2 || !p3 || !p4) continue;
+      let q = orderCorners([p1, p2, p3, p4]);
+      const m = 0.06 * Math.max(w, h);
+      if (q.some(([px, py]) => px < -m || py < -m || px > w + m || py > h + m)) continue;
+      const area = Math.abs(polyArea(q));
+      if (area < w * h * 0.15 || !convex(q)) continue;
+      const cxm = q.reduce((a2, p) => a2 + p[0], 0) / 4, cym = q.reduce((a2, p) => a2 + p[1], 0) / 4;
+      const sup = [support(q[0], q[1], cxm, cym), support(q[1], q[2], cxm, cym), support(q[2], q[3], cxm, cym), support(q[3], q[0], cxm, cym)];
+      // alle Seiten gleiche Polarität (Dokument heller ODER dunkler als Hintergrund)
+      const pols = sup.map((v) => v.pol);
+      if (!(pols.every((v) => v >= 0.75) || pols.every((v) => v <= 0.25))) continue;
+      const sides = sup.map((v) => v.s);
+      const minS = Math.min(...sides), avg = sides.reduce((s2, v) => s2 + v, 0) / 4;
+      const score = avg * 0.7 + minS * 0.3 + Math.min(0.15, (area / (w * h)) * 0.15);
+      if (!best || score > best.score) best = { score, q, minS, avg };
+    }
+  }
+  if (!best || best.avg < 0.42 || best.minS < 0.18) return null;
+  const corners = best.q.map(([px, py]) => [Math.max(0, Math.min(W, px / k)), Math.max(0, Math.min(H, py / k))]);
+  // sure = eindeutig erkannt; sonst nur Vorschlag (bitte prüfen)
+  return { corners, confidence: Math.min(1, best.score), sure: best.score >= 0.75 && best.minS >= 0.45 };
 }
-const full = (W, H) => [[W * 0.04, H * 0.04], [W * 0.96, H * 0.04], [W * 0.96, H * 0.96], [W * 0.04, H * 0.96]];
-function polyArea(p) { let a = 0; for (let i = 0; i < p.length; i++) { const [x1, y1] = p[i], [x2, y2] = p[(i + 1) % p.length]; a += x1 * y2 - x2 * y1; } return a / 2; }
+
+// Rückwärtskompatibel: Array oder null
+export function detectCorners(canvas) { const r = detectDocument(canvas); return r ? r.corners : null; }
+export function insetCorners(W, H, f = 0.03) { return [[W * f, H * f], [W * (1 - f), H * f], [W * (1 - f), H * (1 - f)], [W * f, H * (1 - f)]]; }
+
+function blur(src, w, h) {
+  const out = new Float32Array(w * h), tmp = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; const a = x > 0 ? src[i - 1] : src[i], b = x < w - 1 ? src[i + 1] : src[i];
+    tmp[i] = (a + 2 * src[i] + b) / 4;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x; const a = y > 0 ? tmp[i - w] : tmp[i], b = y < h - 1 ? tmp[i + w] : tmp[i];
+    out[i] = (a + 2 * tmp[i] + b) / 4;
+  }
+  return out;
+}
+export function orderCorners(pts) {
+  const cx = pts.reduce((s, p) => s + p[0], 0) / 4, cy = pts.reduce((s, p) => s + p[1], 0) / 4;
+  const o = [...pts].sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+  // Start bei oben-links (kleinste x+y)
+  let s = 0; o.forEach((p, i) => { if (p[0] + p[1] < o[s][0] + o[s][1]) s = i; });
+  return [...o.slice(s), ...o.slice(0, s)];
+}
+function convex(q) {
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const [a, b, c] = [q[i], q[(i + 1) % 4], q[(i + 2) % 4]];
+    const z = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+    if (Math.abs(z) < 1e-9) return false;
+    if (!sign) sign = Math.sign(z); else if (Math.sign(z) !== sign) return false;
+  }
+  return true;
+}
+export function polyArea(p) { let a = 0; for (let i = 0; i < p.length; i++) { const [x1, y1] = p[i], [x2, y2] = p[(i + 1) % p.length]; a += x1 * y2 - x2 * y1; } return a / 2; }
 
 // ---------- Perspektive korrigieren ----------
 function homography(src, dst) { // dst -> src
@@ -66,7 +202,6 @@ function homography(src, dst) { // dst -> src
     A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.push(u);
     A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); b.push(v);
   }
-  // Gauss-Elimination
   for (let c = 0; c < 8; c++) {
     let p = c; for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
     [A[c], A[p]] = [A[p], A[c]]; [b[c], b[p]] = [b[p], b[c]];
@@ -78,9 +213,10 @@ function homography(src, dst) { // dst -> src
   return b.map((v, i) => v / A[i][i]).concat(1);
 }
 export function warp(canvas, q, maxSide = 1700) {
+  q = orderCorners(q);
   const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   let w = Math.max(dist(q[0], q[1]), dist(q[3], q[2])), h = Math.max(dist(q[0], q[3]), dist(q[1], q[2]));
-  const k = Math.min(1, maxSide / Math.max(w, h)); w = Math.round(w * k); h = Math.round(h * k);
+  const k = Math.min(1, maxSide / Math.max(w, h)); w = Math.max(1, Math.round(w * k)); h = Math.max(1, Math.round(h * k));
   const H = homography(q, [[0, 0], [w, 0], [w, h], [0, h]]);
   const sw = canvas.width, sh = canvas.height;
   const sd = canvas.getContext('2d').getImageData(0, 0, sw, sh).data;
@@ -98,19 +234,44 @@ export function warp(canvas, q, maxSide = 1700) {
 }
 
 // ---------- Kontrast (Dokument-Modus) ----------
+// Weissabgleich mit lokalem Papierhintergrund: entfernt Schatten und
+// ungleichmässiges Licht, Papier wird weiss, Schrift bleibt dunkel.
 export function enhance(canvas, mode = 'gray') {
   if (mode === 'color') return canvas;
-  const ctx = canvas.getContext('2d'); const im = ctx.getImageData(0, 0, canvas.width, canvas.height); const d = im.data;
-  const hist = new Array(256).fill(0); const n = d.length / 4;
-  for (let i = 0; i < d.length; i += 4) hist[(d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0]++;
-  let lo = 0, hi = 255, acc = 0;
-  for (let i = 0; i < 256; i++) { acc += hist[i]; if (acc > n * 0.02) { lo = i; break; } }
-  acc = 0; for (let i = 255; i >= 0; i--) { acc += hist[i]; if (acc > n * 0.05) { hi = i; break; } }
-  const span = Math.max(30, hi - lo);
-  for (let i = 0; i < d.length; i += 4) {
-    let v = ((d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) - lo) * 255 / span;
-    if (mode === 'bw') v = v > 150 ? 255 : v < 90 ? 0 : (v - 90) * 4.25;
-    v = Math.max(0, Math.min(255, v)); d[i] = d[i + 1] = d[i + 2] = v;
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d'); const im = ctx.getImageData(0, 0, W, H); const d = im.data;
+  const gray = new Float32Array(W * H);
+  for (let i = 0, p = 0; p < W * H; i += 4, p++) gray[p] = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+  // Hintergrund pro Zelle: 90%-Wert (Papier), dann glätten
+  const cell = Math.max(16, Math.round(Math.max(W, H) / 40));
+  const gw = Math.ceil(W / cell), gh = Math.ceil(H / cell);
+  let bg = new Float32Array(gw * gh);
+  const hist = new Uint32Array(256);
+  for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+    hist.fill(0); let n = 0;
+    for (let y = gy * cell; y < Math.min(H, (gy + 1) * cell); y += 2) for (let x = gx * cell; x < Math.min(W, (gx + 1) * cell); x += 2) { hist[gray[y * W + x] | 0]++; n++; }
+    let acc = 0, v = 255; for (let k = 255; k >= 0; k--) { acc += hist[k]; if (acc >= n * 0.1) { v = k; break; } }
+    bg[gy * gw + gx] = Math.max(40, v);
+  }
+  for (let pass = 0; pass < 2; pass++) {
+    const nb = new Float32Array(gw * gh);
+    for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+      let s = 0, c = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const yy = y + dy, xx = x + dx; if (yy < 0 || xx < 0 || yy >= gh || xx >= gw) continue; s += bg[yy * gw + xx]; c++; }
+      nb[y * gw + x] = Math.max(bg[y * gw + x] * 0.9, s / c);
+    }
+    bg = nb;
+  }
+  const at = (x, y) => { // bilinear
+    const fx = Math.min(gw - 1.001, Math.max(0, x / cell - 0.5)), fy = Math.min(gh - 1.001, Math.max(0, y / cell - 0.5));
+    const x0 = fx | 0, y0 = fy | 0, ax = fx - x0, ay = fy - y0, x1 = Math.min(gw - 1, x0 + 1), y1 = Math.min(gh - 1, y0 + 1);
+    return (bg[y0 * gw + x0] * (1 - ax) + bg[y0 * gw + x1] * ax) * (1 - ay) + (bg[y1 * gw + x0] * (1 - ax) + bg[y1 * gw + x1] * ax) * ay;
+  };
+  for (let y = 0, p = 0; y < H; y++) for (let x = 0; x < W; x++, p++) {
+    let v = gray[p] / at(x, y); // 1 = Papier
+    if (mode === 'bw') v = v > 0.78 ? 255 : v < 0.55 ? 0 : ((v - 0.55) / 0.23) * 255;
+    else { v = Math.min(1, v * 1.04); v = v > 0.9 ? 255 : Math.pow(Math.max(0, v), 1.6) * 255 / Math.pow(0.9, 1.6); }
+    v = Math.max(0, Math.min(255, v)); const i = p * 4; d[i] = d[i + 1] = d[i + 2] = v;
   }
   ctx.putImageData(im, 0, 0);
   return canvas;
@@ -184,7 +345,6 @@ const toISO = (d, m, y) => { y = +y < 100 ? 2000 + +y : +y; const dt = new Date(
 export function extractFields(text) {
   const t = text || ''; const lines = t.split(/\n/).map((l) => l.trim()).filter(Boolean);
   const f = {};
-  // Betrag
   const cand = [];
   for (const l of lines) {
     const re = /(?:CHF|Fr\.?|SFr\.?)?\s*(\d{1,3}(?:['’ ]?\d{3})*[.,]\d{2})\b/g; let m;
@@ -195,7 +355,6 @@ export function extractFields(text) {
     }
   }
   if (cand.length) { cand.sort((a, b) => b.w - a.w || b.v - a.v); f.amount = cand[0].v; }
-  // Daten
   const dateRe = /(\d{1,2})\.(\d{1,2})\.(\d{2,4})/g; const all = []; let m;
   while ((m = dateRe.exec(t))) { const iso = toISO(m[1], m[2], m[3]); if (iso) all.push(iso); }
   for (const l of lines) {
