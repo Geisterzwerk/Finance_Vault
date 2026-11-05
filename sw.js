@@ -1,5 +1,5 @@
 // Service Worker – Offline-Fähigkeit. Nach jeder Änderung VERSION erhöhen!
-const VERSION = 'fv-v2.2.1';
+const VERSION = 'fv-v2.2.2';
 const LIBS = 'fv-libs-v1';
 const FILES = ['./', './index.html', './manifest.webmanifest', './css/style.css',
   './js/app.js', './js/vault.js', './js/store.js', './js/calc.js', './js/prices.js', './js/importer.js', './js/bingx.js',
@@ -18,7 +18,7 @@ self.addEventListener('fetch', (e) => {
     return;
   }
   if (url.origin !== location.origin) return; // Kurs- und Ledger-APIs nie cachen
-  e.respondWith(fetch(e.request).then((res) => { const c = res.clone(); caches.open(VERSION).then((x) => x.put(e.request, c)); return res; })
+  e.respondWith(fetch(e.request, { cache: 'no-store' }).then((res) => { const c = res.clone(); caches.open(VERSION).then((x) => x.put(e.request, c)); return res; })
     .catch(() => caches.match(e.request, { ignoreSearch: true }).then((r) => r || caches.match('./index.html'))));
 });
 

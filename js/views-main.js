@@ -6,8 +6,7 @@ import { TYPES, ACCOUNT_KINDS, portfolio, netWorth, holdings, goalProgress, revi
 import { coinId } from './prices.js';
 import { closingDue } from './taxpack.js';
 import {
-  esc, chf, qty, price, pct, cls, dmy, dmyShort, hm, ago, daysUntil, greeting, longDate, bar, icon,
-  openSheet, closeSheet, toast, chips, chipVal, confetti,
+  openSheet, closeSheet, toast, chips, chipVal, bindChips, confetti,
 } from './ui.js';
 
 export const ui = { investTab: 'crypto' };
@@ -190,7 +189,7 @@ export function openTx(tx = null, sym = '') {
       <div class="small mut">Transfer: Bestand und Ø-Preis bleiben gleich. Reward: Kostenbasis CHF 0. Anfangsbestand ohne CHF: Ø-Preis wird nicht berechnet. Trägst du beim Anfangsbestand den Kaufbetrag ein, wird der Ø-Preis vollständig.</div>
       <button class="btn gold block big mt" data-act="save">Speichern</button>
       ${tx ? '<button class="btn danger block" data-act="del">Löschen</button>' : ''}`,
-    bind: (el) => el.addEventListener('click', (e) => {
+    bind: (el) => { bindChips(el, 'type'); el.addEventListener('click', (e) => {
       const b = e.target.closest('[data-act]'); if (!b) return;
       const s = S();
       if (b.dataset.act === 'del') { if (confirm('Transaktion löschen?')) { s.transactions = s.transactions.filter((q) => q.id !== tx.id); commit(); closeSheet(); } return; }
