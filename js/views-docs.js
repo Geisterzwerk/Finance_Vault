@@ -5,18 +5,15 @@
 import { S, commit, uid } from './store.js';
 import { holdings, yearEndHoldings } from './calc.js';
 import { putFile, getFileURL, getFileBytes, deleteFile } from './vault.js';
-import * as SC from './scan.js';
 import * as LG from './ledger.js';
 import * as TP from './taxpack.js';
 import * as BX from './bingx.js';
-import { esc, chf, qty, dmy, ago, isoDay, bar, icon, openSheet, closeSheet, closeAll, toast, download, chips, chipVal, rerender } from './ui.js';
- import { openScanner } from './scanui.js';
-export { openScanner };
+import { esc, chf, qty, dmy, ago, bar, icon, openSheet, closeSheet, closeAll, toast, download, chips, chipVal } from './ui.js';
+import { openScanner } from './scanui.js';
 
+export { openScanner };
 const CATS = ['Einkommen', 'Vorsorge', 'Vermögen', 'Steuern', 'Studium', 'Gesundheit', 'Spenden', 'Mobilität', 'Versicherung', 'Kommunikation', 'Wohnen', 'Abos', 'Sonstiges'];
 const yearNow = () => new Date().getFullYear();
-
-
 
 // ---------- Ergebnis prüfen und ablegen ----------
 export function openResult(d, inboxDoc = null) {
@@ -52,7 +49,7 @@ export function openResult(d, inboxDoc = null) {
     bind: (el) => el.addEventListener('click', async (e) => {
       const b = e.target.closest('[data-act]'); if (!b) return; const s = S();
       capture(el);
-      if (b.dataset.act === 'view') { const u = await getFileURL(d.file); if (u) window.open(u, '_blank'); return; }
+      if (b.dataset.act === 'view') { const u = await getFileURL(d.file); if (u) window.open(u, '_blank', 'noopener'); return; }
       const removeInbox = () => { if (inboxDoc) s.documents = s.documents.filter((x) => x.id !== inboxDoc.id); };
       if (b.dataset.act === 'drop') { if (!confirm('Dokument verwerfen?')) return; await deleteFile(d.file); removeInbox(); commit(); closeSheet(); return; }
       if (b.dataset.act === 'later') { s.documents.push({ id: uid(), status: 'inbox', created: new Date().toISOString(), ...d }); commit(); toast('In der Finance Inbox'); closeSheet(); return; }
@@ -132,7 +129,7 @@ function openDoc(d) {
       <button class="btn danger block" data-act="del">Löschen</button>`,
     bind: (el) => el.addEventListener('click', async (e) => {
       const b = e.target.closest('[data-act]'); if (!b) return; const s = S();
-      if (b.dataset.act === 'view') { const u = await getFileURL(d.file); if (u) window.open(u, '_blank'); }
+      if (b.dataset.act === 'view') { const u = await getFileURL(d.file); if (u) window.open(u, '_blank', 'noopener'); }
       if (b.dataset.act === 'save') {
         const v = (n) => el.querySelector(`[name=${n}]`).value.trim();
         Object.assign(d, { title: v('title'), year: +v('year') || d.year, ziffer: v('ziffer'), amount: v('amount') === '' ? null : Number(v('amount').replace(',', '.')), category: v('category'), tax: chipVal(el, 'tax') || d.tax });
@@ -286,7 +283,7 @@ export function bindTaxExtras(el, y, setYear) {
     commit(); toast('Im Archiv gespeichert');
   }));
   el.addEventListener('click', async (e) => {
-    const o = e.target.closest('[data-open]'); if (o) { const d = S().documents.find((x) => x.id === o.dataset.open); const u = await getFileURL(d.file); if (u) window.open(u, '_blank'); return; }
+    const o = e.target.closest('[data-open]'); if (o) { const d = S().documents.find((x) => x.id === o.dataset.open); const u = await getFileURL(d.file); if (u) window.open(u, '_blank', 'noopener'); return; }
     const yr = e.target.closest('[data-year]'); if (yr) { setYear(+yr.dataset.year); return; }
     const x = e.target.closest('[data-x]'); if (!x) return;
     if (x.dataset.x === 'closing') openClosing(y);

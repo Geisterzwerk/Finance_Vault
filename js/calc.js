@@ -87,10 +87,16 @@ export function holdings(until = null) {
         x.fees += chf || 0;
         break;
       }
-      case 'transfer':
-        if (fee) { const q = Math.min(fee, x.qty); x.qty -= q; }
+      case 'transfer': {
+        // fee = Gebühr in CHF (nur Statistik). feeQty = Netzwerkgebühr in Coins:
+        // verlässt den Bestand, Kostenbasis bleibt -> Ø-Preis steigt leicht.
+        // (Bis v2.2 wurde der CHF-Betrag fälschlich als Coin-Menge abgezogen.)
+        x.fees += fee;
+        const fq = Math.min(Math.abs(Number(t.feeQty) || 0), x.qty);
+        if (fq > EPS) { if (x.qty > EPS) x.unknownQty -= x.unknownQty * (fq / x.qty); x.qty -= fq; }
         if (t.to) x.lastLocation = t.to;
         break;
+      }
     }
     if (x.qty < EPS) { x.qty = 0; x.cost = 0; x.unknownQty = 0; }
   }
@@ -112,7 +118,7 @@ export function holdings(until = null) {
 export function portfolio() {
   const s = S();
   const list = Object.values(holdings()).filter((x) => x.qty > 1e-8 || Math.abs(x.realized) > 0.005);
-  let total = 0, cost = 0, unreal = 0, realized = 0;
+  let total = 0, cost = 0, unreal = 0, realized = 0, realizedUnknown = false, missingPrice = 0;
   for (const x of list) {
     const p = s.prices[x.asset];
     x.price = p ? p.chf : null;
@@ -120,12 +126,12 @@ export function portfolio() {
     x.value = x.price != null ? x.qty * x.price : null;
     x.unreal = x.value != null && x.avg != null ? x.value - x.cost : null;
     x.unrealPct = x.unreal != null && x.cost > 0 ? (x.unreal / x.cost) * 100 : null;
-    if (x.value != null) total += x.value;
+    if (x.value != null) total += x.value; else if (x.qty > 1e-8) missingPrice++;
     if (x.unreal != null) { unreal += x.unreal; cost += x.cost; }
-    realized += x.realized;
+    realized += x.realized; if (x.realizedUnknown) realizedUnknown = true;
   }
   list.sort((a, b) => (b.value || 0) - (a.value || 0));
-  return { list, total, unreal, unrealPct: cost > 0 ? (unreal / cost) * 100 : null, realized, held: list.filter((x) => x.qty > 1e-8) };
+  return { list, total, unreal, unrealPct: cost > 0 ? (unreal / cost) * 100 : null, realized, realizedUnknown, missingPrice, held: list.filter((x) => x.qty > 1e-8) };
 }
 
 export function netWorth() {
@@ -173,5 +179,6 @@ export function checkMilestones() {
   return fresh;
 }
 
+export const typeInfo = (t) => TYPES[t] || { l: String(t || '?'), c: 'grey' };
 export const reviewCount = () => S().transactions.filter((t) => t.type === 'review').length;
 export const yearEndHoldings = (year) => holdings(new Date(year, 11, 31, 23, 59, 59).toISOString());

@@ -48,30 +48,56 @@ const MO = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'Augus
 export const longDate = (d = new Date()) => `${WD[d.getDay()]}, ${d.getDate()}. ${MO[d.getMonth()]} ${d.getFullYear()}`;
 
 // ---------- Sheets (Stapel) ----------
+// Beim Neuzeichnen desselben Sheets (Zurück aus einem Unter-Sheet, Live-Update)
+// bleiben eingegebene Werte und gewählte Chips erhalten.
 const stack = [];
+let shown = null;
+function readForm(root) {
+  const f = { v: {}, c: {} };
+  root.querySelectorAll('input[name], select[name], textarea[name]').forEach((i) => {
+    if (i.type === 'file') return;
+    f.v[i.name] = i.type === 'checkbox' ? i.checked : i.value;
+  });
+  root.querySelectorAll('[data-chips]').forEach((b) => { const x = b.querySelector('.chip.sel'); f.c[b.dataset.chips] = x ? x.dataset.val : null; });
+  return f;
+}
+function writeForm(root, f) {
+  if (!f) return;
+  root.querySelectorAll('input[name], select[name], textarea[name]').forEach((i) => {
+    if (i.type === 'file' || !(i.name in f.v)) return;
+    if (i.type === 'checkbox') i.checked = f.v[i.name]; else i.value = f.v[i.name];
+  });
+  root.querySelectorAll('[data-chips]').forEach((b) => {
+    if (!(b.dataset.chips in f.c)) return;
+    b.querySelectorAll('.chip').forEach((c) => setChip(c, c.dataset.val === f.c[b.dataset.chips]));
+  });
+}
 export function openSheet(sheet) {
   const cur = stack[stack.length - 1];
-  if (cur && cur.capture) cur.capture($('#sheet-body'));
+  if (cur) { const body = $('#sheet-body'); if (cur.capture) cur.capture(body); cur._form = readForm(body); }
   stack.push(sheet); render(false);
 }
 export function closeSheet() {
   stack.pop();
   if (stack.length) render(true);
-  else { $('#sheet').classList.remove('open'); $('#sheet-bg').classList.remove('open'); }
+  else closeAll();
 }
-export function closeAll() { stack.length = 0; $('#sheet').classList.remove('open'); $('#sheet-bg').classList.remove('open'); }
+export function closeAll() { stack.length = 0; shown = null; $('#sheet').classList.remove('open'); $('#sheet-bg').classList.remove('open'); $('#sheet-body').replaceChildren(); }
 export function refreshSheet() { const s = stack[stack.length - 1]; if (s && s.live) render(true); }
 export function rerender() { if (stack.length) render(true); }
 export const sheetOpen = () => stack.length > 0;
 function render(keep) {
   const s = stack[stack.length - 1];
   const body = $('#sheet-body'); const top = body.scrollTop;
+  const form = keep ? (shown === s ? readForm(body) : s._form) : null;
   $('#sheet-title').textContent = s.title;
   $('#sheet-back').textContent = stack.length > 1 ? '‹ Zurück' : 'Schliessen';
   const inner = document.createElement('div');
   inner.innerHTML = s.render();
   body.replaceChildren(inner);
+  shown = s;
   $('#sheet').classList.add('open'); $('#sheet-bg').classList.add('open');
+  writeForm(inner, form);
   if (s.bind) s.bind(inner);
   body.scrollTop = keep ? top : 0;
 }
@@ -93,15 +119,21 @@ export function download(name, content, type = 'application/json') {
 // ---------- Bausteine ----------
 export const bar = (p, color = 'gold') => `<div class="bar"><i class="${color}" style="width:${Math.max(0, Math.min(100, p * 100)).toFixed(1)}%"></i></div>`;
 export const icon = (k) => ({ ok: '<span class="ic ok">✓</span>', warn: '<span class="ic warn">!</span>', bad: '<span class="ic bad">✕</span>' }[k] || '');
+// Auswahlknöpfe: EIN zentraler Klick-Handler für alle Formulare (auch neu
+// gezeichnete). Wer reagieren will, nutzt bindChips(root, name, cb).
+function setChip(c, on) { c.classList.toggle('sel', on); c.setAttribute('aria-pressed', on ? 'true' : 'false'); }
 export function chips(name, opts, sel) {
-  return `<div class="chips" data-chips="${name}">${opts.map(([v, l]) => `<button type="button" class="chip ${String(v) === String(sel) ? 'sel' : ''}" data-val="${esc(v)}">${esc(l)}</button>`).join('')}</div>`;
+  return `<div class="chips" role="group" data-chips="${esc(name)}">${opts.map(([v, l]) => { const on = String(v) === String(sel); return `<button type="button" class="chip${on ? ' sel' : ''}" aria-pressed="${on}" data-val="${esc(v)}">${esc(l)}</button>`; }).join('')}</div>`;
 }
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('[data-chips] .chip'); if (!b) return;
+  const box = b.closest('[data-chips]');
+  box.querySelectorAll('.chip').forEach((c) => setChip(c, c === b));
+  box.dispatchEvent(new CustomEvent('chipchange', { bubbles: true, detail: { name: box.dataset.chips, value: b.dataset.val } }));
+});
 export function bindChips(root, name, cb) {
-  const box = root.querySelector(`[data-chips="${name}"]`); if (!box) return;
-  box.addEventListener('click', (e) => {
-    const b = e.target.closest('.chip'); if (!b) return;
-    box.querySelectorAll('.chip').forEach((c) => c.classList.remove('sel')); b.classList.add('sel'); cb && cb(b.dataset.val);
-  });
+  const box = root.querySelector(`[data-chips="${name}"]`); if (!box || !cb) return;
+  box.addEventListener('chipchange', (e) => cb(e.detail.value));
 }
 export const chipVal = (root, name) => root.querySelector(`[data-chips="${name}"] .chip.sel`)?.dataset.val;
 

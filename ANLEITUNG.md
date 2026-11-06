@@ -1,40 +1,33 @@
-# Scanner-Update (v2.2)
+# Update auf v2.3.0
 
-Neu: automatische Erkennung auch bei weissem Blatt auf hellem Grund, Lupe beim Ziehen,
-Ecken greifen relativ (kein Springen), Abstand zum Bildschirmrand, sauberer Weissabgleich.
+## 1. Hochladen
 
-## 1. Dateien kopieren
-`js/scan.js` (ersetzen) und `js/scanui.js` (neu) in den Ordner `js` deines Projekts kopieren.
+```bash
+git add -A
+git commit -m "Finance Vault v2.3.0: Fixes, Sicherheit"
+git push
+```
 
-## 2. `js/views-docs.js` anpassen
-a) Ganz oben, unter den anderen `import`-Zeilen, einfügen:
+## 2. Auf dem iPhone
 
-    import { openScanner } from './scanui.js';
-    export { openScanner };
+1. App öffnen. Sie lädt die neue Version (ggf. einmal ganz schliessen und neu öffnen, oder oben «Neue Version verfügbar» antippen).
+2. Entsperren. Der Vault wird dabei automatisch auf die stärkere Verschlüsselung (600'000 Iterationen) umgestellt – dauert ein bis zwei Sekunden.
+3. **Neues Backup** erstellen: Vault › Einstellungen › Backup exportieren – jetzt mit Backup-Passwort (mind. 10 Zeichen, z. B. vier Wörter). Datei in «Dateien» sichern, Passwort getrennt notieren. Alte Backups sind nur PIN-geschützt → löschen.
 
-b) Die alte Scanner-Funktion löschen: alles von der Zeile
+### Nur falls der Spalt unter der Tab-Leiste bleibt
 
-    export function openScanner() {
+Die neue Statusleisten-Einstellung liest iOS **nur beim Hinzufügen zum Home-Bildschirm**. Achtung: Eine Home-Bildschirm-App hat auf dem iPhone ihren **eigenen Speicher** – beim Entfernen des Icons werden ihre Daten gelöscht.
 
-bis direkt **vor** die Zeile
+1. Backup aus Schritt 3 muss vorhanden sein (und Backup-Passwort + PIN bekannt).
+2. Icon entfernen › in Safari `https://geisterzwerk.github.io/Finance_Vault/` öffnen › Teilen › Zum Home-Bildschirm.
+3. App öffnen › auf dem Willkommen-Bildschirm **«Backup wiederherstellen»** › Backup-Datei wählen › Passwort und PIN eingeben.
 
-    // ---------- Ergebnis prüfen und ablegen ----------
+## 3. Künftige Updates
 
-(die Kommentarzeile selbst bleibt stehen).
+- Nach `git push` erkennt die App neue Versionen selbst, sobald du sie wieder öffnest: oben erscheint «Neue Version verfügbar – tippen zum Neuladen».
+- In `sw.js` die `VERSION` und in `js/version.js` die `APP_VERSION` erhöhen (für einen sauberen Offline-Cache). Updates kommen aber auch an, wenn du es vergisst.
 
-## 3. `css/style.css` – ganz ans Ende einfügen
+## 4. Server
 
-    .cropstage { padding: 4px 22px 6px; display: flex; justify-content: center; touch-action: none; overscroll-behavior: contain; -webkit-user-select: none; user-select: none; }
-    .cropstage canvas { touch-action: none; display: block; }
-    .cropstage img { max-width: 100%; max-height: 58vh; border-radius: 10px; display: block; }
-
-## 4. `sw.js`
-- `VERSION` erhöhen, z. B. `fv-v2.2.0`
-- In der Liste `FILES` nach `'./js/scan.js',` ergänzen: `'./js/scanui.js',`
-
-## 5. Hochladen
-    git add .
-    git commit -m "Scanner verbessert"
-    git push
-
-App auf dem iPhone 2x ganz schliessen und öffnen.
+Siehe `finance-vault-server/README.md`. Neu: Dockerfile mit Härtung, `server.py pair|status|revoke-all`, Host-Prüfung.
+Nach dem Update auf Linux einmal `sudo chown -R 10001:10001 data` ausführen (Container läuft nicht mehr als root).

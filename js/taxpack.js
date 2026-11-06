@@ -10,6 +10,7 @@ import * as LIB from './libs.js';
 const p2 = (n) => String(n).padStart(2, '0');
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const chf = (v) => (v == null ? '–' : 'CHF ' + Number(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, "'"));
+const reEsc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const safe = (s) => String(s || 'Dokument').replace(/[^\w.\-äöüÄÖÜ ]+/g, '_').slice(0, 60);
 
 // ---------- Jahresabschluss: Datencheck ----------
@@ -18,7 +19,7 @@ export function yearEndCheck(y) {
   const items = [];
   const imp = (name, label) => {
     const im = s.imports[name]; if (!im) return;
-    const cover = im.to ? new Date(im.to.replace(' ', 'T')).getTime() : new Date(im.last).getTime();
+    const cover = im.toMs || (im.to ? new Date(String(im.to).replace(' ', 'T')).getTime() : new Date(im.last).getTime());
     const ok = cover >= end - 7 * 864e5 || new Date(im.last).getTime() > end;
     items.push({ label, ok, warn: !ok, detail: ok ? `aktuell · ${String(im.to || im.last).slice(0, 10)}` : `veraltet · ${String(im.to || im.last).slice(0, 10)}`, fix: '#/vault' });
   };
@@ -170,7 +171,8 @@ const ext = (f) => (f.type === 'application/pdf' ? '.pdf' : f.type === 'image/pn
 // ---------- Prüfung der eingereichten Steuererklärung ----------
 export async function pdfText(bytes) {
   const pdfjs = await LIB.pdfjs();
-  const doc = await pdfjs.getDocument({ data: bytes }).promise;
+  // isEvalSupported: false schützt vor CVE-2024-4367 (Code-Ausführung über präparierte PDF-Schriften)
+  const doc = await pdfjs.getDocument({ data: bytes, isEvalSupported: false, enableXfa: false }).promise;
   let out = '';
   for (let p = 1; p <= doc.numPages; p++) {
     const tc = await (await doc.getPage(p)).getTextContent();
@@ -193,7 +195,7 @@ export function audit(y, text) {
   let total = 0;
   for (const h of hold) {
     const r = rates[h.asset]; const v = r ? h.qty * r.chf : null; if (v) total += v;
-    const nameHit = new RegExp(`\\b${h.asset}\\b`, 'i').test(flat) || (CN[h.asset] && CN[h.asset].test(flat));
+    const nameHit = new RegExp(`\\b${reEsc(h.asset)}\\b`, 'i').test(flat) || (CN[h.asset] && CN[h.asset].test(flat));
     if (v != null && v < 50) continue;
     res.push({ label: `Crypto ${h.asset}`, st: nameHit ? (v == null || has(v) ? 'ok' : 'warn') : 'bad',
       detail: nameHit ? (v == null || has(v) ? 'gefunden' : `Coin gefunden, Wert ${chf(v)} nicht gefunden`) : 'nicht in der Erklärung gefunden' });
@@ -208,7 +210,7 @@ export function audit(y, text) {
   }
   for (const a of s.accounts.filter((x) => x.kind !== 'liability')) {
     const words = a.name.split(/\s+/).filter((w) => w.length > 3);
-    const hit = words.some((w) => new RegExp(w, 'i').test(flat));
+    const hit = words.some((w) => new RegExp(reEsc(w), 'i').test(flat));
     res.push({ label: a.name, st: hit ? 'ok' : 'warn', detail: hit ? 'erwähnt' : 'Name nicht gefunden – deklariert?' });
   }
   const ok = res.filter((r) => r.st === 'ok').length;

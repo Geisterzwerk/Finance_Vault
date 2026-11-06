@@ -5,3 +5,10 @@
 *.xlsx
 .DS_Store
 Thumbs.db
+
+# Server-Geheimnisse (falls der Server-Ordner hier liegt)
+.env
+.env.*
+!.env.example
+*.pem
+data/

@@ -2,11 +2,12 @@
 // views-more.js – Steuern, Rechnungen, Vault (Import, Prüfen, Einstellungen)
 // =====================================================================
 import { S, commit, flush, uid, setState, demoState, defaultGoals } from './store.js';
-import { TYPES, yearEndHoldings } from './calc.js';
+import { yearEndHoldings } from './calc.js';
 import { historicalCHF } from './prices.js';
 import { parseCSV, guessMapping, interpret, preview, toTransactions, ROLES } from './importer.js';
 import * as BX from './bingx.js';
-import { putFile, getFileURL, deleteFile, exportBackup, importBackup, wipeAll, changePin, lock } from './vault.js';
+import { putFile, getFileURL, deleteFile, exportBackup, importBackup, backupInfo, wipeAll, changePin, lock } from './vault.js';
+import { APP_VERSION } from './version.js';
 import {
   esc, chf, qty, price, dmy, dmyShort, ago, daysUntil, isoDay, bar, icon, openSheet, closeSheet, closeAll,
   toast, download, chips, chipVal, rerender,
@@ -210,7 +211,7 @@ export function openInvoice(inv = null) {
         capture(el);
         if (b.dataset.act === 'paid') { d.status = 'paid'; d.paidAt = isoDay(new Date()); rerender(); return; }
         if (b.dataset.act === 'unpaid') { d.status = 'open'; d.paidAt = ''; rerender(); return; }
-        if (b.dataset.act === 'view') { const u = await getFileURL(inv.file); if (u) window.open(u, '_blank'); return; }
+        if (b.dataset.act === 'view') { const u = await getFileURL(inv.file); if (u) window.open(u, '_blank', 'noopener'); return; }
         if (b.dataset.act === 'ics') return downloadICS(d);
         if (b.dataset.act === 'del') {
           if (!confirm('Rechnung löschen?')) return;
@@ -338,7 +339,7 @@ function openBingx(files, ignored) {
       if (b.dataset.act === 'apply') {
         s.raw.bingx = merged.rows;
         BX.apply(result);
-        s.imports.BingX = { last: new Date().toISOString(), count: result.txs.length, to: result.to };
+        s.imports.BingX = { last: new Date().toISOString(), count: result.txs.length, to: result.to, toMs: result.toMs };
         commit(); closeAll(); toast('BingX übernommen'); dispatchEvent(new Event('refreshprices'));
       }
     }),
@@ -387,7 +388,8 @@ function openImport(text, platform, fname) {
       </div>
       <label class="check"><input type="checkbox" name="tq" ${st.trackQuote ? 'checked' : ''}> Gegen-Coins (z. B. USDT) als eigenen Bestand mitführen</label>
       <div class="lbl mt">Vorschau</div><div class="card" data-sample>${sampleHTML()}</div>
-      ${st.checked ? `<div class="card goldb"><b class="gold">Import geprüft</b><div class="small">${st.checked.read} gelesen · ${st.checked.dup} schon vorhanden · <b>${st.checked.fresh.length} neu</b>${st.checked.errors ? ' · ' + st.checked.errors + ' unlesbar' : ''}</div>
+      ${/bingx/i.test(st.platform) && s.raw.bingx && s.raw.bingx.length ? `<div class="note amber"><b>Achtung Doppelzählung:</b> Du hast bereits BingX-Kontoauszüge importiert. Handelshistorie zusätzlich über den allgemeinen Import einzulesen, zählt dieselben Trades doppelt. Für BingX bitte nur Spot_Account.csv/Fund_Account.csv verwenden.</div>` : ''}
+      ${st.checked ? `<div class="card goldb"><b class="gold">Import geprüft</b><div class="small">${st.checked.read} gelesen · ${st.checked.dup} schon vorhanden${st.checked.skipped ? ' · ' + st.checked.skipped + ' früher gelöscht' : ''} · <b>${st.checked.fresh.length} neu</b>${st.checked.errors ? ' · ' + st.checked.errors + ' unlesbar' : ''}</div>
         ${st.checked.review ? `<div class="small amber">${st.checked.review} davon unklar</div>` : ''}</div>
         <button class="btn gold block big" data-act="go" ${st.checked.fresh.length ? '' : 'disabled'}>${st.checked.fresh.length} Transaktionen importieren</button>`
         : '<button class="btn gold block big mt" data-act="check">Prüfen</button>'}
@@ -453,7 +455,7 @@ async function serverAction(a, el, b) {
     if (a === 'srvtest') { busy('Sende …'); const r = await SRV.testPush(); toast(r.ok ? 'Test gesendet – kommt gleich' : 'Kein Gerät registriert – zuerst Mitteilungen aktivieren'); }
     if (a === 'srvsync') { busy('Gleiche ab …'); const r = await SRV.syncAll({ quiet: false }); toast(r && r.bx && r.bx.added ? `${r.bx.added} neue BingX-Trades` : 'Abgeglichen'); }
     if (a === 'srvbx') { busy('Frage BingX ab …'); const r = await SRV.triggerBingx(); await SRV.syncBingx(); toast(r.ok ? `BingX: ${r.new} neue Trades` : 'BingX: ' + (r.error || 'Fehler')); }
-    if (a === 'srvoff' && confirm('Verbindung zum Server trennen?')) { SRV.unpair(); toast('Getrennt'); }
+    if (a === 'srvoff' && confirm('Verbindung zum Server trennen? Der Zugang wird auch auf dem Server gelöscht.')) { busy('Trenne …'); await SRV.unpair(); toast('Getrennt'); }
   } catch (e) { toast(e.message, 4000); }
   commit();
 }
@@ -464,12 +466,12 @@ function settingsPage() {
   return {
     title: 'Einstellungen', sub: 'Backup, PIN, Kurse',
     html: `
-    <label class="field"><span>Dein Name</span><input data-set="name" value="${esc(s.name)}"></label>
-    <label class="field"><span>Standard-Wallet für Auszahlungen</span><input data-set="defaultWallet" value="${esc(s.defaultWallet)}"></label>
-    <label class="field"><span>Automatisch sperren nach (Minuten)</span><input data-set="autoLockMin" type="number" value="${s.autoLockMin}"></label>
-    <label class="field"><span>CoinGecko Demo-API-Key (optional, für mehr Abfragen)</span><input data-set="cgKey" value="${esc(s.cgKey)}" placeholder="CG-…"></label>
+    <label class="field"><span>Dein Name</span><input data-set="name" value="${esc(s.name)}" maxlength="40"></label>
+    <label class="field"><span>Standard-Wallet für Auszahlungen</span><input data-set="defaultWallet" value="${esc(s.defaultWallet)}" maxlength="40"></label>
+    <label class="field"><span>Automatisch sperren nach (Minuten, 1–60)</span><input data-set="autoLockMin" type="number" min="1" max="60" inputmode="numeric" value="${s.autoLockMin}"></label>
+    <label class="field"><span>CoinGecko Demo-API-Key (optional, für mehr Abfragen)</span><input data-set="cgKey" value="${esc(s.cgKey)}" placeholder="CG-…" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
     <div class="lbl mt">Backup</div>
-    <div class="card small mut">Das Backup bleibt verschlüsselt und ist nur mit deinem PIN lesbar. Ohne Backup sind die Daten bei Verlust des iPhones weg.</div>
+    <div class="card small mut">Das Backup wird doppelt verschlüsselt: mit deinem PIN <b>und</b> einem separaten Backup-Passwort (mind. 10 Zeichen). So bleibt es sicher, auch wenn die Datei in iCloud oder per Mail in falsche Hände gerät. Ohne Backup sind die Daten bei Verlust des iPhones weg.</div>
     <div class="grid2"><button class="btn gold" data-act="backup">⬇ Backup exportieren</button><label class="btn line">⬆ Backup laden<input type="file" data-act="restore" accept=".json,application/json" hidden></label></div>
     <div class="lbl mt">Eigener Server (Tailscale)</div>
     ${serverCard()}
@@ -481,31 +483,96 @@ function settingsPage() {
     <div class="lbl mt">Daten</div>
     <div class="grid2"><button class="btn line" data-act="demo">Demo-Daten laden</button><button class="btn line" data-act="goals">Standard-Ziele</button></div>
     <button class="btn danger block mt" data-act="wipe">Alles löschen</button>
-    <div class="small mut center mt">Finance Vault v2.1 · ${S().transactions.length} Transaktionen · ${S().invoices.length} Rechnungen</div>`,
+    <div class="small mut center mt">Finance Vault v${APP_VERSION} · ${S().transactions.length} Transaktionen · ${S().invoices.length} Rechnungen</div>`,
     bind: (el) => {
-      el.querySelectorAll('[data-set]').forEach((i) => i.addEventListener('change', () => { s[i.dataset.set] = i.type === 'number' ? Number(i.value) || 5 : i.value.trim(); commit(); toast('Gespeichert'); }));
+      el.querySelectorAll('[data-set]').forEach((i) => i.addEventListener('change', () => {
+        s[i.dataset.set] = i.type === 'number' ? Math.min(60, Math.max(1, Math.round(Number(i.value) || 5))) : i.value.trim();
+        if (i.type === 'number') i.value = s[i.dataset.set];
+        commit(); toast('Gespeichert');
+      }));
       el.querySelector('[data-act=restore]').addEventListener('change', async (e) => {
-        const f = e.target.files[0]; if (!f) return;
-        if (!confirm('Alle aktuellen Daten durch das Backup ersetzen? Danach mit dem PIN des Backups entsperren.')) return;
-        try { await importBackup(await f.text()); location.reload(); } catch (err) { toast('Ungültiges Backup'); }
+        const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+        try { const text = await f.text(); openRestore(text, backupInfo(text)); } catch (err) { toast(err.message || 'Ungültiges Backup'); }
       });
       el.addEventListener('click', async (e) => {
         const b = e.target.closest('button[data-act]'); if (!b) return;
         const a = b.dataset.act;
-        if (a === 'backup') { await flush(); download(`FinanceVault_Backup_${isoDay(new Date())}.json`, await exportBackup()); }
+        if (a === 'backup') openBackup();
         if (a.startsWith('srv')) return serverAction(a, el, b);
         if (a === 'ics') download('FinanceVault_Erinnerungen.ics', remindersICS(), 'text/calendar');
         if (a === 'lock') { await flush(); lock(); location.reload(); }
-        if (a === 'pin') {
-          const o = prompt('Aktueller PIN'); if (!o) return;
-          const n = prompt('Neuer PIN (mind. 6 Zeichen)'); if (!n || n.length < 6) return toast('Mindestens 6 Zeichen');
-          if (prompt('Neuen PIN wiederholen') !== n) return toast('PINs stimmen nicht überein');
-          toast((await changePin(o, n, S())) ? 'PIN geändert' : 'Aktueller PIN falsch');
-        }
-        if (a === 'demo' && confirm('Demo-Daten laden? Deine aktuellen Daten werden ersetzt.')) { setState(demoState()); commit(); location.hash = '#/'; toast('Demo-Daten geladen'); dispatchEvent(new Event('refreshprices')); }
+        if (a === 'pin') openChangePin();
+        if (a === 'demo' && confirm('Demo-Daten laden? Deine aktuellen Daten werden ersetzt. Vorher ein Backup machen!')) { setState(demoState()); commit(); location.hash = '#/'; toast('Demo-Daten geladen'); dispatchEvent(new Event('refreshprices')); }
         if (a === 'goals' && confirm('Standard-Ziele hinzufügen?')) { S().goals.push(...defaultGoals(S())); commit(); toast('Ziele hinzugefügt'); }
         if (a === 'wipe' && confirm('Wirklich ALLES löschen?') && prompt('Zur Bestätigung LÖSCHEN eintippen') === 'LÖSCHEN') { await wipeAll(); location.reload(); }
       });
     },
   };
+}
+
+// Passwortfelder statt prompt(): prompt() zeigt die Eingabe im Klartext an.
+const pw = (name, label, auto = 'off') => `<label class="field"><span>${label}</span><input name="${name}" type="password" autocomplete="${auto}" autocapitalize="off" spellcheck="false"></label>`;
+const pinStrength = (p) => (/^\d+$/.test(p) ? 'Nur Ziffern: bequem, aber schwach. Mit Buchstaben/Wort-Passphrase ist der Vault deutlich sicherer.' : p.length < 10 ? 'Gut. Länger (10+ Zeichen) ist noch sicherer.' : 'Stark.');
+
+function openChangePin() {
+  openSheet({
+    title: 'PIN ändern',
+    render: () => `${pw('old', 'Aktueller PIN', 'current-password')}${pw('n1', 'Neuer PIN / Passwort (mind. 6 Zeichen)', 'new-password')}${pw('n2', 'Neuen PIN wiederholen', 'new-password')}
+      <div class="small mut" data-str></div>
+      <div class="small mut mt">Alle Daten und Dateien werden mit dem neuen PIN neu verschlüsselt (alles oder nichts – bei einem Abbruch bleibt der alte PIN gültig).</div>
+      <button class="btn gold block big mt" data-act="go">PIN ändern</button>`,
+    bind: (el) => {
+      const val = (n) => el.querySelector(`[name=${n}]`).value;
+      el.querySelector('[name=n1]').addEventListener('input', () => { el.querySelector('[data-str]').textContent = val('n1') ? pinStrength(val('n1')) : ''; });
+      el.querySelector('[data-act=go]').addEventListener('click', async (e) => {
+        const b = e.currentTarget;
+        if (val('n1').length < 6) return toast('Mindestens 6 Zeichen');
+        if (val('n1') !== val('n2')) return toast('Neue PINs stimmen nicht überein');
+        b.disabled = true; b.textContent = 'Verschlüssele neu …';
+        try {
+          await flush();
+          const ok = await changePin(val('old'), val('n1'), S());
+          toast(ok ? 'PIN geändert' : 'Aktueller PIN falsch');
+          if (ok) closeSheet();
+        } catch (err) { console.error(err); toast('Fehler – alter PIN bleibt gültig'); }
+        b.disabled = false; b.textContent = 'PIN ändern';
+      });
+    },
+  });
+}
+
+function openBackup() {
+  openSheet({
+    title: 'Backup exportieren',
+    render: () => `<div class="small mut">Wähle ein Backup-Passwort (mind. 10 Zeichen, z. B. vier zufällige Wörter). Notiere es getrennt vom iPhone – ohne Backup-Passwort <b>und</b> PIN lässt sich das Backup nicht öffnen.</div>
+      ${pw('p1', 'Backup-Passwort', 'new-password')}${pw('p2', 'Backup-Passwort wiederholen', 'new-password')}
+      <button class="btn gold block big mt" data-act="go">⬇ Backup erstellen</button>`,
+    bind: (el) => el.querySelector('[data-act=go]').addEventListener('click', async (e) => {
+      const b = e.currentTarget; const p1 = el.querySelector('[name=p1]').value;
+      if (p1.length < 10) return toast('Mindestens 10 Zeichen');
+      if (p1 !== el.querySelector('[name=p2]').value) return toast('Passwörter stimmen nicht überein');
+      b.disabled = true; b.textContent = 'Verschlüssele …';
+      try { await flush(); download(`FinanceVault_Backup_${isoDay(new Date())}.json`, await exportBackup(p1)); toast('Backup erstellt'); closeSheet(); }
+      catch (err) { console.error(err); toast(err.message || 'Backup fehlgeschlagen'); b.disabled = false; b.textContent = '⬇ Backup erstellen'; }
+    }),
+  });
+}
+
+function openRestore(text, info) {
+  openSheet({
+    title: 'Backup laden',
+    render: () => `<div class="note amber"><b>Ersetzt alle aktuellen Daten</b> durch das Backup${info.exported ? ' vom ' + dmy(info.exported) : ''}. Erst wenn Passwort und PIN stimmen, wird etwas verändert.</div>
+      ${info.needsPassword ? pw('bp', 'Backup-Passwort', 'current-password') : '<div class="small amber">Älteres Backup ohne Backup-Passwort (nur PIN-geschützt). Nach dem Laden bitte ein neues Backup erstellen.</div>'}
+      ${pw('pin', 'PIN des Backups', 'current-password')}
+      <button class="btn gold block big mt" data-act="go">Prüfen und ersetzen</button>`,
+    bind: (el) => el.querySelector('[data-act=go]').addEventListener('click', async (e) => {
+      const b = e.currentTarget;
+      if (!confirm('Alle aktuellen Daten durch das Backup ersetzen?')) return;
+      b.disabled = true; b.textContent = 'Prüfe …';
+      try {
+        await importBackup(text, { password: el.querySelector('[name=bp]')?.value || '', pin: el.querySelector('[name=pin]').value });
+        toast('Backup geladen – bitte entsperren'); setTimeout(() => location.reload(), 600);
+      } catch (err) { toast(err.message || 'Ungültiges Backup', 4000); b.disabled = false; b.textContent = 'Prüfen und ersetzen'; }
+    }),
+  });
 }

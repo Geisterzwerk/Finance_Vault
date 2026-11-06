@@ -12,10 +12,11 @@ export const emptyState = () => ({
   goals: [],          // Ziele mit Meilensteinen
   invoices: [],       // Rechnungen
   imports: {},        // Plattform -> { last, count, mapping }
-  raw: {},
+  raw: {},            // Rohdaten von Konto-Auszügen (z. B. BingX), für Neuberechnung
+  deletedExt: {},     // extId -> Datum: bewusst gelöschte Import-Buchungen (kommen beim Re-Import nicht zurück)
   documents: [],      // Dokumente (Scans, PDFs, Steuererklärung, Veranlagung)
   ledger: { addresses: [], last: null },
-  server: { url: '', token: '', lastSync: null, lastReminders: '', push: false, status: null },            // Rohdaten von Konto-Auszügen (z. B. BingX), für Neuberechnung
+  server: { url: '', token: '', lastSync: null, lastReminders: '', push: false, status: null },
   coins: {},          // Symbol -> { id (CoinGecko), name, location }
   prices: {},         // Symbol -> { chf, change24h, at }
   pricesAt: null,
@@ -32,6 +33,8 @@ export function setState(s) {
   const e = emptyState();
   state = { ...e, ...s, settings: { ...e.settings, ...(s.settings || {}) } };
 }
+// Beim Sperren: entschlüsselte Daten aus dem Arbeitsspeicher entfernen
+export function clearState() { clearTimeout(timer); state = emptyState(); }
 export const onChange = (f) => listeners.push(f);
 
 // Speichern (verschlüsselt, leicht verzögert) + UI neu zeichnen
@@ -41,6 +44,13 @@ export function commit(silent = false) {
   timer = setTimeout(() => saveState(state).catch((e) => console.warn('Speichern fehlgeschlagen', e)), 250);
 }
 export async function flush() { clearTimeout(timer); await saveState(state); }
+
+// Import-Buchung löschen und merken, damit ein erneuter Import sie nicht wiederbringt
+export function deleteTx(id) {
+  const t = state.transactions.find((q) => q.id === id);
+  if (t && t.extId) state.deletedExt[t.extId] = new Date().toISOString();
+  state.transactions = state.transactions.filter((q) => q.id !== id);
+}
 
 export function demoState() {
   const s = emptyState();

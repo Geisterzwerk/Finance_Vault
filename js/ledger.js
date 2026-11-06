@@ -5,7 +5,8 @@
 // =====================================================================
 
 const j = async (url, body) => {
-  const r = await fetch(url, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : undefined);
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 15000);
+  const r = await fetch(url, { signal: ctl.signal, referrerPolicy: 'no-referrer', ...(body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}) }).finally(() => clearTimeout(t));
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 };
@@ -24,7 +25,7 @@ export const CHAINS = {
     async fetch(addr) {
       let sat = 0;
       for (const a of addr.split(/[,\s]+/).filter(Boolean)) {
-        const d = await j(`https://mempool.space/api/address/${a}`);
+        const d = await j(`https://mempool.space/api/address/${encodeURIComponent(a)}`);
         sat += d.chain_stats.funded_txo_sum - d.chain_stats.spent_txo_sum + d.mempool_stats.funded_txo_sum - d.mempool_stats.spent_txo_sum;
       }
       return { BTC: sat / 1e8 };
@@ -72,7 +73,7 @@ export const CHAINS = {
   sei: {
     label: 'Sei (SEI)', hint: 'Adresse sei1…',
     async fetch(a) {
-      const r = await j(`https://rest.sei-apis.com/cosmos/bank/v1beta1/balances/${a}`);
+      const r = await j(`https://rest.sei-apis.com/cosmos/bank/v1beta1/balances/${encodeURIComponent(a)}`);
       const b = (r.balances || []).find((x) => x.denom === 'usei');
       return { SEI: b ? Number(b.amount) / 1e6 : 0 };
     },

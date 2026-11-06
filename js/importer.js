@@ -131,6 +131,11 @@ export async function interpret(parsed, mapping, opts) {
   const { platform, defaultQuote = 'CHF', defaultAsset = '' } = opts;
   const g = (row, role) => (mapping[role] != null && mapping[role] !== '' ? row[mapping[role]] : undefined);
   const out = []; let errors = 0;
+  // Zählt gleiche Schlüssel innerhalb DER Datei: Zwei identische Zeilen (z. B. zwei
+  // Teil-Ausführungen derselben Order) sind zwei echte Buchungen, kein Duplikat.
+  // Das erste Vorkommen behält das bisherige ID-Format -> frühere Importe bleiben erkannt.
+  const occ = {};
+  const nth = (k) => { const n = occ[k] || 0; occ[k] = n + 1; return n ? `${k}#${n}` : k; };
   for (const row of parsed.rows) {
     const date = parseDate(g(row, 'date'));
     let [asset, quote] = g(row, 'pair') ? splitPair(g(row, 'pair')) : [null, null];
@@ -149,7 +154,7 @@ export async function interpret(parsed, mapping, opts) {
     const amount = Math.abs(rawAmount);
     if (total == null && price != null) total = price * amount;
     const kind = detectType(typeText, Math.sign(rawAmount));
-    const extId = g(row, 'txid') ? platform + ':' + g(row, 'txid') + ':' + asset + ':' + kind : 'h:' + (await hashRow(platform, row));
+    const extId = nth(g(row, 'txid') ? platform + ':' + g(row, 'txid') + ':' + asset + ':' + kind : 'h:' + (await hashRow(platform, row)));
     out.push({ date, asset, quote, amount, total: total != null ? Math.abs(total) : null, chf: chf != null ? Math.abs(chf) : null,
       fee: fee != null ? Math.abs(fee) : 0, feeAsset, kind, typeText, extId, raw: row.join(' | ') });
   }
@@ -157,13 +162,16 @@ export async function interpret(parsed, mapping, opts) {
 }
 
 export function preview(records) {
-  const existing = new Set(S().transactions.map((t) => t.extId).filter(Boolean));
-  const seen = new Set(); let dup = 0; const fresh = [];
+  const s = S();
+  const existing = new Set(s.transactions.map((t) => t.extId).filter(Boolean));
+  const deleted = s.deletedExt || {};
+  const seen = new Set(); let dup = 0, skipped = 0; const fresh = [];
   for (const r of records) {
     if (existing.has(r.extId) || seen.has(r.extId)) { dup++; continue; }
+    if (deleted[r.extId]) { skipped++; continue; }
     seen.add(r.extId); fresh.push(r);
   }
-  return { fresh, dup, review: fresh.filter((r) => r.kind === 'review').length };
+  return { fresh, dup, skipped, review: fresh.filter((r) => r.kind === 'review').length };
 }
 
 export async function toTransactions(records, opts, progress = () => {}) {

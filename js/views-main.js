@@ -1,11 +1,12 @@
 // =====================================================================
 // views-main.js – Übersicht, Invest, Coin-Detail, Konten, Ziele
 // =====================================================================
-import { S, commit, uid } from './store.js';
-import { TYPES, ACCOUNT_KINDS, portfolio, netWorth, holdings, goalProgress, reviewCount } from './calc.js';
+import { S, commit, uid, deleteTx } from './store.js';
+import { TYPES, ACCOUNT_KINDS, portfolio, netWorth, holdings, goalProgress, reviewCount, typeInfo } from './calc.js';
 import { coinId } from './prices.js';
 import { closingDue } from './taxpack.js';
 import {
+  esc, chf, qty, price, pct, cls, dmy, dmyShort, hm, ago, daysUntil, greeting, longDate, bar, icon,
   openSheet, closeSheet, toast, chips, chipVal, bindChips, confetti,
 } from './ui.js';
 
@@ -85,7 +86,8 @@ export function invest() {
     const done = pf.list.filter((x) => x.qty <= 1e-8);
     body = `<div class="card hero"><div class="lbl">Crypto total</div><div class="row"><div class="serif huge grow">${chf(pf.total)}</div>
       <div class="right"><div class="b ${cls(pf.unreal)}">${chf(pf.unreal, 0, true)}</div><div class="small ${cls(pf.unreal)}">${pct(pf.unrealPct)}</div></div></div>
-      <div class="small mut">Unrealisiert nur für Coins mit vollständiger Kaufhistorie · Realisiert ${chf(pf.realized, 0, true)}</div></div>
+      <div class="small mut">Unrealisiert nur für Coins mit vollständiger Kaufhistorie · Realisiert ${chf(pf.realized, 0, true)}${pf.realizedUnknown ? ' <span class="amber">(teilweise unbekannt)</span>' : ''}</div>
+      ${pf.missingPrice ? `<div class="small amber">${pf.missingPrice} Coin${pf.missingPrice > 1 ? 's' : ''} ohne Kurs – nicht im Total enthalten</div>` : ''}</div>
       <div class="thead"><span>Coin</span><span>Ø Kauf</span><span>Wert / P/L</span></div>
       ${pf.held.map((x) => `<div class="coin clickable" data-coin="${esc(x.asset)}">
         <div class="cic">${esc(x.asset[0])}</div><div class="grow"><b>${esc(x.asset)}</b><div class="small mut">${qty(x.qty)}</div></div>
@@ -146,8 +148,8 @@ export function openCoin(sym) {
       <div class="card row"><div class="grow"><div class="small mut">Realisierter Gewinn</div><b class="${x.realizedUnknown ? 'amber' : cls(x.realized)}">${x.realizedUnknown ? 'teilweise unbekannt' : chf(x.realized, 2, true)}</b></div><div class="right"><div class="small mut">Gebühren</div><b>${chf(x.fees, 2)}</b></div></div>
       ${x.quality === 'missing' ? `<div class="note amber">Für einen Teil des Bestands fehlt die Kaufhistorie (Anfangsbestand ohne Preis). Importiere die ältere Handelshistorie oder trage den Kaufpreis im Anfangsbestand nach. Es wird kein Ø-Preis erfunden.</div>` : ''}
       <div class="lbl mt">Transaktionen (${txs.length})</div>
-      ${txs.slice(0, 200).map((t) => `<div class="txr clickable" data-tx="${t.id}"><i class="dotc ${TYPES[t.type].c}"></i><div class="grow"><b>${TYPES[t.type].l}</b><div class="small mut">${dmyShort(t.date)} · ${esc(t.platform || '')}${t.to ? ' › ' + esc(t.to) : ''}</div></div>
-        <div class="right"><b>${t.type === 'sell' || t.type === 'fee' ? '-' : t.type === 'transfer' ? '' : '+'}${qty(t.amount)}</b><div class="small mut">${t.type === 'transfer' ? 'kein Kauf' : t.type === 'reward' ? 'Kosten 0' : t.chf != null ? chf(t.chf, 2) : 'CHF fehlt'}</div></div></div>`).join('')}
+      ${txs.slice(0, 200).map((t) => `<div class="txr clickable" data-tx="${t.id}"><i class="dotc ${typeInfo(t.type).c}"></i><div class="grow"><b>${esc(typeInfo(t.type).l)}</b><div class="small mut">${dmyShort(t.date)} · ${esc(t.platform || '')}${t.to ? ' › ' + esc(t.to) : ''}</div></div>
+        <div class="right"><b>${t.type === 'sell' || t.type === 'fee' ? '-' : t.type === 'transfer' ? '' : '+'}${qty(t.amount)}</b><div class="small mut">${t.type === 'transfer' ? (t.feeQty ? 'Gebühr ' + qty(t.feeQty) : 'kein Kauf') : t.type === 'reward' ? 'Kosten 0' : t.chf != null ? chf(t.chf, 2) : 'CHF fehlt'}</div></div></div>`).join('')}
       <div class="lbl mt">Einstellungen</div>
       <label class="field"><span>CoinGecko-ID (für Kurse)</span><input name="cgid" value="${esc(coinId(sym) || '')}" placeholder="z. B. kaspa"></label>
       <label class="field"><span>Liegt auf (Verwahrung)</span><input name="loc" value="${esc((s.coins[sym] || {}).location || '')}" placeholder="${esc(x.location || 'z. B. Ledger')}"></label>
@@ -167,42 +169,68 @@ export function openCoin(sym) {
 }
 
 // ---------- Transaktion erfassen / bearbeiten ----------
+const toNum = (x) => { x = String(x ?? '').trim(); if (x === '') return null; const n = Number(x.replace(/['’\s]/g, '').replace(',', '.')); return Number.isFinite(n) ? n : NaN; };
 export function openTx(tx = null, sym = '') {
-  const d = tx ? { ...tx } : { type: 'buy', asset: sym, amount: '', chf: '', fee: 0, platform: '', date: new Date().toISOString(), note: '', to: '' };
-  const localISO = (iso) => new Date(new Date(iso).getTime() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
+  const d = tx ? { ...tx } : { type: 'buy', asset: sym, amount: '', chf: '', fee: 0, feeQty: '', platform: '', date: new Date().toISOString(), note: '', to: '' };
+  const localISO = (iso) => { const t = new Date(iso); return isNaN(t) ? '' : new Date(t.getTime() - t.getTimezoneOffset() * 6e4).toISOString().slice(0, 16); };
+  const showFor = (el, type) => { el.querySelectorAll('[data-only]').forEach((x) => { x.hidden = !x.dataset.only.split(' ').includes(type); }); };
   openSheet({
     title: tx ? (tx.type === 'review' ? 'Bitte zuordnen' : 'Transaktion') : 'Neue Transaktion',
     render: () => `
-      ${d.type === 'review' ? `<div class="note amber"><b>Nicht eindeutig.</b> Lieber einmal fragen als falsch rechnen.<div class="small mt">${esc(d.raw || '')}</div><div class="small">${esc(d.note || '')}</div></div>` : ''}
+      ${d.type === 'review' ? `<div class="note amber"><b>Nicht eindeutig.</b> Lieber einmal fragen als falsch rechnen.<div class="small mt">${esc(d.raw || '')}</div><div class="small">${esc(d.note || '')}</div>${d.suggest ? `<div class="small">Betrag laut Export: ${esc(d.suggest)}</div>` : ''}</div>` : ''}
       ${d.note && d.type !== 'review' ? `<div class="small mut">${esc(d.note)}</div>` : ''}
       <div class="lbl mt">Was ist das?</div>
       ${chips('type', Object.entries(TYPES).filter(([k]) => k !== 'review').map(([k, v]) => [k, v.l]), d.type === 'review' ? '' : d.type)}
+      <div class="small mut" data-hint></div>
       <div class="grid2">
-        <label class="field"><span>Coin</span><input name="asset" value="${esc(d.asset)}" autocapitalize="characters" placeholder="BTC"></label>
+        <label class="field"><span>Coin</span><input name="asset" value="${esc(d.asset)}" autocapitalize="characters" autocomplete="off" placeholder="BTC"></label>
         <label class="field"><span>Menge</span><input name="amount" inputmode="decimal" value="${esc(d.amount)}"></label>
-        <label class="field"><span>Gesamt in CHF</span><input name="chf" inputmode="decimal" value="${esc(d.chf ?? '')}" placeholder="leer = unbekannt"></label>
-        <label class="field"><span>Gebühr CHF</span><input name="fee" inputmode="decimal" value="${esc(d.fee || '')}"></label>
+        <label class="field" data-only="buy sell opening reward fee"><span>Gesamt in CHF</span><input name="chf" inputmode="decimal" value="${esc(d.type === 'transfer' ? '' : d.chf ?? '')}" placeholder="leer = unbekannt"></label>
+        <label class="field" data-only="buy sell transfer"><span>Gebühr CHF</span><input name="fee" inputmode="decimal" value="${esc(d.fee || '')}"></label>
         <label class="field"><span>Datum</span><input name="date" type="datetime-local" value="${esc(localISO(d.date))}"></label>
         <label class="field"><span>Plattform</span><input name="platform" value="${esc(d.platform)}" placeholder="BingX, Relai"></label>
       </div>
-      <label class="field"><span>Transfer nach (nur bei Transfer)</span><input name="to" value="${esc(d.to || '')}" placeholder="z. B. Ledger"></label>
-      <div class="small mut">Transfer: Bestand und Ø-Preis bleiben gleich. Reward: Kostenbasis CHF 0. Anfangsbestand ohne CHF: Ø-Preis wird nicht berechnet. Trägst du beim Anfangsbestand den Kaufbetrag ein, wird der Ø-Preis vollständig.</div>
+      <div class="grid2" data-only="transfer">
+        <label class="field"><span>Transfer nach</span><input name="to" value="${esc(d.to || '')}" placeholder="z. B. Ledger"></label>
+        <label class="field"><span>Netzwerkgebühr in Coins</span><input name="feeQty" inputmode="decimal" value="${esc(d.feeQty || '')}" placeholder="optional"></label>
+      </div>
       <button class="btn gold block big mt" data-act="save">Speichern</button>
       ${tx ? '<button class="btn danger block" data-act="del">Löschen</button>' : ''}`,
-    bind: (el) => { bindChips(el, 'type'); el.addEventListener('click', (e) => {
-      const b = e.target.closest('[data-act]'); if (!b) return;
-      const s = S();
-      if (b.dataset.act === 'del') { if (confirm('Transaktion löschen?')) { s.transactions = s.transactions.filter((q) => q.id !== tx.id); commit(); closeSheet(); } return; }
-      const v = (n) => el.querySelector(`[name=${n}]`).value.trim();
-      const type = chipVal(el, 'type'); if (!type) return toast('Bitte Typ wählen');
-      const n = (x) => (x === '' ? null : Number(x.replace(/['’]/g, '').replace(',', '.')));
-      const o = { type, asset: v('asset').toUpperCase(), amount: n(v('amount')), chf: n(v('chf')), fee: n(v('fee')) || 0, date: new Date(v('date')).toISOString(), platform: v('platform'), to: v('to') };
-      if (!o.asset || !o.amount) return toast('Coin und Menge angeben');
-      if (type === 'transfer') o.chf = 0;
-      if (type === 'reward' && o.chf == null) o.chf = 0;
-      if (tx) { Object.assign(tx, o, { decided: true }); delete tx.raw; } else s.transactions.push({ id: uid(), extId: '', note: '', ...o });
-      commit(); toast('Gespeichert'); closeSheet();
-    }),
+    bind: (el) => {
+      const HINT = {
+        buy: 'Kauf: erhöht Bestand und Kostenbasis (inkl. Gebühr). Ohne CHF-Betrag wird kein Ø-Preis berechnet.',
+        sell: 'Verkauf: bucht zum Ø-Preis aus, Differenz = realisierter Gewinn/Verlust.',
+        transfer: 'Transfer zwischen eigenen Konten: Bestand und Ø-Preis bleiben gleich (nur die Netzwerkgebühr verlässt den Bestand).',
+        reward: 'Reward/Rebate: Kostenbasis CHF 0, falls kein Betrag angegeben.',
+        fee: 'Gebühr in Coins: Bestand sinkt, Kostenbasis bleibt.',
+        opening: 'Anfangsbestand: ohne CHF-Betrag bleibt der Ø-Preis offen. Mit Kaufbetrag wird er vollständig.',
+      };
+      const upd = (type) => { showFor(el, type || 'none'); el.querySelector('[data-hint]').textContent = HINT[type] || 'Bitte oben wählen, was diese Buchung ist.'; };
+      upd(chipVal(el, 'type'));
+      bindChips(el, 'type', upd);
+      el.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-act]'); if (!b) return;
+        const s = S();
+        if (b.dataset.act === 'del') { if (confirm('Transaktion löschen?' + (tx.extId ? ' Sie wird auch bei einem erneuten Import nicht wieder angelegt.' : ''))) { deleteTx(tx.id); commit(); closeSheet(); } return; }
+        const v = (n) => el.querySelector(`[name=${n}]`).value.trim();
+        const type = chipVal(el, 'type'); if (!type) return toast('Bitte zuerst oben wählen, was das ist');
+        const amount = toNum(v('amount')); const chfV = toNum(v('chf')); const fee = toNum(v('fee')); const feeQty = toNum(v('feeQty'));
+        const date = new Date(v('date'));
+        const asset = v('asset').toUpperCase().replace(/\s+/g, '');
+        if (!asset || !/^[A-Z0-9.\-_]{1,20}$/.test(asset)) return toast('Coin-Kürzel angeben (z. B. BTC)');
+        if (!(amount > 0)) return toast('Menge muss grösser als 0 sein');
+        if (Number.isNaN(chfV) || (chfV != null && chfV < 0)) return toast('CHF-Betrag ungültig');
+        if (Number.isNaN(fee) || (fee != null && fee < 0) || Number.isNaN(feeQty) || (feeQty != null && feeQty < 0)) return toast('Gebühr ungültig');
+        if (isNaN(date)) return toast('Datum ungültig');
+        const o = { type, asset, amount, chf: chfV, fee: fee || 0, date: date.toISOString(), platform: v('platform'), to: '', feeQty: 0 };
+        if (type === 'transfer') { o.chf = 0; o.to = v('to'); o.feeQty = feeQty || 0; if (o.feeQty >= amount) return toast('Gebühr grösser als Menge?'); }
+        if (type === 'reward' && o.chf == null) o.chf = 0;
+        if (type === 'fee') o.fee = 0;
+        if (tx) { const live = s.transactions.find((q) => q.id === tx.id); if (live) { Object.assign(live, o, { decided: true }); delete live.raw; delete live.suggest; } }
+        else s.transactions.push({ id: uid(), extId: '', note: '', ...o });
+        commit(); toast('Gespeichert'); closeSheet();
+      });
+    },
   });
 }
 
@@ -221,16 +249,17 @@ export function openAccount(a = null) {
       ${a ? '<button class="btn danger block" data-act="del">Löschen</button>' : ''}`,
     bind: (el) => el.addEventListener('click', (e) => {
       const b = e.target.closest('[data-act]'); if (!b) return; const s = S();
-      if (b.dataset.act === 'del') { if (confirm('Konto löschen?')) { s.accounts = s.accounts.filter((q) => q.id !== a.id); commit(); closeSheet(); } return; }
+      if (b.dataset.act === 'del') { if (confirm('Konto löschen?')) { s.accounts = s.accounts.filter((q) => q.id !== a.id); s.goals = s.goals.filter((g) => !(g.kind === 'account' && g.accountId === a.id)); commit(); closeSheet(); } return; }
       const name = el.querySelector('[name=name]').value.trim(); if (!name) return toast('Name fehlt');
-      const value = Number(el.querySelector('[name=value]').value.replace(/['’]/g, '').replace(',', '.')) || 0;
+      const value = toNum(el.querySelector('[name=value]').value) ?? 0;
+      if (Number.isNaN(value)) return toast('Betrag ungültig');
       const o = { name, kind: chipVal(el, 'kind') || 'bank', value, tag: el.querySelector('[name=ng]').checked ? 'notgroschen' : '' };
       if (a) {
         if (a.value !== value) { a.history = [...(a.history || []), { at: a.updated, value: a.value }]; a.updated = new Date().toISOString(); }
         Object.assign(a, o);
       } else s.accounts.push({ id: uid(), ...o, updated: new Date().toISOString(), history: [] });
       if (o.tag === 'notgroschen' && !s.goals.some((g) => g.kind === 'account')) {
-        const acc = s.accounts.find((q) => q.tag === 'notgroschen');
+        const acc = s.accounts.find((q) => q.tag === 'notgroschen'); if (acc)
         s.goals.push({ id: uid(), name: 'Notgroschen', kind: 'account', accountId: acc.id, unit: 'CHF', color: 'green', milestones: [7000], reached: {} });
       }
       commit(); toast('Gespeichert'); closeSheet();

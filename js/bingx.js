@@ -39,24 +39,38 @@ export function parseFile(text, name = '') {
   if (!acct) return null;
   const h = p.headers.map((x) => x.toLowerCase().trim());
   const ix = (...names) => h.findIndex((x) => names.includes(x));
-  const iT = h.findIndex((x) => x.startsWith('time(')), iType = ix('type'), iAmt = ix('amount'),
+  const iT = h.findIndex((x) => x.startsWith('time(')), tz = tzFromHeader(h[iT]), iType = ix('type'), iAmt = ix('amount'),
     iBal = ix('newavailableamount', 'new_available_amount'), iAsset = ix('assets', 'asset_name'), iRem = ix('remark', 'details');
   const rows = [];
   for (const r of p.rows) {
     const amount = num(r[iAmt]); const bal = num(r[iBal]);
     if (amount == null || !r[iAsset] || !r[iT]) continue;
-    rows.push({ acct, ts: r[iT], type: (r[iType] || '').trim(), amount, bal: bal ?? null, asset: r[iAsset].trim().toUpperCase(), remark: iRem >= 0 ? (r[iRem] || '') : '' });
+    const asset = r[iAsset].trim().toUpperCase();
+    if (!/^[A-Z0-9.\-_]{1,20}$/.test(asset)) continue; // nur plausible Coin-Symbole
+    rows.push({ acct, ts: r[iT], tz, type: (r[iType] || '').trim(), amount, bal: bal ?? null, asset, remark: iRem >= 0 ? (r[iRem] || '') : '' });
   }
   return { acct, name, rows, header: p.headers };
 }
 
+// Zeitzone aus der Kopfzeile, z. B. "Time(UTC+8)" -> +480 Minuten. null = unbekannt (Gerätezeit).
+function tzFromHeader(h) {
+  const m = /utc\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?/i.exec(h || '');
+  if (m) return (m[1] === '-' ? -1 : 1) * (+m[2] * 60 + +(m[3] || 0));
+  return /\(utc\)/i.test(h || '') ? 0 : null;
+}
+
+// Schlüssel OHNE Zeitzone, damit früher gespeicherte Rohzeilen weiter erkannt werden
 export const rowKey = (r) => [r.acct, r.ts, r.type, r.asset, r.amount, r.bal].join('|');
 
-// Rohzeilen zusammenführen (Duplikate weg)
+// Rohzeilen zusammenführen (Duplikate weg). Ältere Zeilen ohne Zeitzone
+// übernehmen sie aus dem neuen Import derselben Zeile.
 export function mergeRaw(existing, incoming) {
-  const map = new Map(existing.map((r) => [rowKey(r), r]));
+  const map = new Map(existing.map((r) => [rowKey(r), { ...r }]));
   let added = 0;
-  for (const r of incoming) { const k = rowKey(r); if (!map.has(k)) { map.set(k, r); added++; } }
+  for (const r of incoming) {
+    const k = rowKey(r); const old = map.get(k);
+    if (!old) { map.set(k, r); added++; } else if (old.tz == null && r.tz != null) old.tz = r.tz;
+  }
   return { rows: [...map.values()], added };
 }
 
@@ -71,7 +85,14 @@ function kind(r) {
   if (/fee|funding/.test(t)) return 'fee';
   return 'other';
 }
-const tsDate = (ts, offsetMs = 0) => { const d = parseDate(ts); return d ? new Date(d.getTime() + offsetMs) : null; };
+// Zeitstempel einer Zeile -> echtes Datum. Mit bekannter Zeitzone exakt (UTC-Rechnung),
+// sonst wie bisher als Gerätezeit.
+export function rowDate(r, offsetMs = 0) {
+  const d = parseDate(r.ts); if (!d) return null;
+  if (r.tz == null) return new Date(d.getTime() + offsetMs);
+  const utc = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()) - r.tz * 60e3;
+  return new Date(utc + offsetMs);
+}
 const short = (s) => (s && s.length > 10 ? '…' + s.slice(-6) : s || '');
 const addr = (remark) => { const m = /address:\s*(\S+)/i.exec(remark || ''); return m ? m[1] : ''; };
 
@@ -87,7 +108,7 @@ export function analyse(rows) {
       const prior = r.bal != null ? r.bal - r.amount : null;
       const cur = run[r.asset] || 0;
       if (prior != null && Math.abs(prior - cur) > TOL + Math.abs(prior) * 1e-9) {
-        const g = { acct, asset: r.asset, ts: r.ts, gap: +(prior - cur).toFixed(10) };
+        const g = { acct, asset: r.asset, ts: r.ts, tz: r.tz, gap: +(prior - cur).toFixed(10) };
         gaps.push(g); events.push({ k: 'gap', ...g });
       }
       run[r.asset] = r.bal != null ? r.bal : cur + r.amount;
@@ -104,7 +125,7 @@ export function analyse(rows) {
   }
   for (const legs of Object.values(tradeLegs)) {
     const pos = legs.filter((l) => l.amount > 0), neg = legs.filter((l) => l.amount < 0);
-    if (pos.length === 1 && neg.length === 1) events.push({ k: 'swap', ts: pos[0].ts, recv: pos[0], give: neg[0], recurring: /recurring/i.test(pos[0].type) });
+    if (pos.length === 1 && neg.length === 1) events.push({ k: 'swap', ts: pos[0].ts, tz: pos[0].tz, recv: pos[0], give: neg[0], recurring: /recurring/i.test(pos[0].type) });
     else legs.forEach((l) => events.push({ k: 'other', r: l, ts: l.ts }));
   }
   events.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : (a.k === 'gap' ? -1 : 0) - (b.k === 'gap' ? -1 : 0)));
@@ -116,7 +137,7 @@ export async function build(rows, progress = () => {}) {
   const { events, balances, gaps } = analyse(rows);
   const wallet = S().settings.defaultWallet || 'Ledger';
   const txs = []; let seq = 0; let missingChf = 0;
-  const rate = async (asset, ts) => (asset === 'CHF' ? 1 : historicalCHF(asset, tsDate(ts)));
+  const rate = async (asset, ev) => (asset === 'CHF' ? 1 : historicalCHF(asset, rowDate(ev)));
   const push = (o) => txs.push({ id: uid(), platform: 'BingX', fee: 0, note: '', seq: seq++, ...o });
   const stats = { swaps: 0, recurring: 0, recurringSpent: {}, deposits: 0, withdrawals: 0, rewards: 0, review: 0, missingHistory: {}, stableGaps: {} };
 
@@ -127,23 +148,23 @@ export async function build(rows, progress = () => {}) {
       const { recv, give } = e;
       const ra = Math.abs(recv.amount), ga = Math.abs(give.amount);
       let v = null;
-      if (STABLE.has(give.asset)) { const x = await rate(give.asset, e.ts); if (x != null) v = ga * x; }
-      else if (STABLE.has(recv.asset)) { const x = await rate(recv.asset, e.ts); if (x != null) v = ra * x; }
-      else { const x = await rate(recv.asset, e.ts); if (x != null) v = ra * x; else { const y = await rate(give.asset, e.ts); if (y != null) v = ga * y; } }
+      if (STABLE.has(give.asset)) { const x = await rate(give.asset, e); if (x != null) v = ga * x; }
+      else if (STABLE.has(recv.asset)) { const x = await rate(recv.asset, e); if (x != null) v = ra * x; }
+      else { const x = await rate(recv.asset, e); if (x != null) v = ra * x; else { const y = await rate(give.asset, e); if (y != null) v = ga * y; } }
       if (v == null) missingChf++;
       const chf = v != null ? +v.toFixed(2) : null;
       const note = e.recurring ? 'Sparplan BingX' : 'Handel BingX';
-      push({ type: 'buy', asset: recv.asset, amount: ra, chf, date: tsDate(e.ts).toISOString(), note: `${note}: ${fmt(ga)} ${give.asset} → ${fmt(ra)} ${recv.asset}`, extId: 'bingx:' + rowKey(recv) });
-      push({ type: 'sell', asset: give.asset, amount: ga, chf, date: tsDate(e.ts).toISOString(), note: `${note}: bezahlt für ${recv.asset}`, extId: 'bingx:' + rowKey(give) });
+      push({ type: 'buy', asset: recv.asset, amount: ra, chf, date: rowDate(e).toISOString(), note: `${note}: ${fmt(ga)} ${give.asset} → ${fmt(ra)} ${recv.asset}`, extId: 'bingx:' + rowKey(recv) });
+      push({ type: 'sell', asset: give.asset, amount: ga, chf, date: rowDate(e).toISOString(), note: `${note}: bezahlt für ${recv.asset}`, extId: 'bingx:' + rowKey(give) });
       stats.swaps++;
       if (e.recurring) { stats.recurring++; stats.recurringSpent[give.asset] = (stats.recurringSpent[give.asset] || 0) + ga; }
       continue;
     }
     if (e.k === 'gap') {
-      const d = tsDate(e.ts, -1000).toISOString();
+      const d = rowDate(e, -1000).toISOString();
       const id = `bingx:gap|${e.acct}|${e.ts}|${e.asset}|${e.gap}`;
       if (STABLE.has(e.asset)) {
-        const x = await rate(e.asset, e.ts);
+        const x = await rate(e.asset, e);
         const chf = x != null ? +(Math.abs(e.gap) * x).toFixed(2) : null;
         push({ type: e.gap > 0 ? 'buy' : 'sell', asset: e.asset, amount: Math.abs(e.gap), chf, date: d, extId: id,
           note: e.gap > 0 ? 'Fehlende Gutschrift im Export (bewertet zum Tageskurs)' : 'Fehlende Abbuchung im Export (Handel ausserhalb des Export-Zeitraums)' });
@@ -159,14 +180,14 @@ export async function build(rows, progress = () => {}) {
       }
       continue;
     }
-    const r = e.r; const amt = Math.abs(r.amount); const d = tsDate(r.ts).toISOString(); const id = 'bingx:' + rowKey(r);
+    const r = e.r; const amt = Math.abs(r.amount); const d = rowDate(r).toISOString(); const id = 'bingx:' + rowKey(r);
     switch (e.k) {
       case 'withdraw':
         push({ type: 'transfer', asset: r.asset, amount: amt, chf: 0, date: d, to: wallet, extId: id, note: `Auszahlung an ${short(addr(r.remark))}` });
         stats.withdrawals++; break;
       case 'deposit':
         if (STABLE.has(r.asset)) {
-          const x = await rate(r.asset, r.ts);
+          const x = await rate(r.asset, r);
           push({ type: 'buy', asset: r.asset, amount: amt, chf: x != null ? +(amt * x).toFixed(2) : null, date: d, extId: id, note: 'Einzahlung Stablecoin (bewertet zum Tageskurs)' });
           if (x == null) missingChf++;
         } else {
@@ -188,7 +209,8 @@ export async function build(rows, progress = () => {}) {
     }
   }
   const dates = rows.map((r) => r.ts).sort();
-  return { txs, balances, gaps, stats, missingChf, from: dates[0], to: dates[dates.length - 1] };
+  const ms = rows.map((r) => rowDate(r)).filter(Boolean).map((d) => d.getTime());
+  return { txs, balances, gaps, stats, missingChf, from: dates[0], to: dates[dates.length - 1], toMs: ms.length ? Math.max(...ms) : null };
 }
 
 const fmt = (v) => String(+Number(v).toFixed(8));
@@ -199,7 +221,8 @@ const fmt = (v) => String(+Number(v).toFixed(8));
 export function apply(result) {
   const s = S();
   const decided = new Map(s.transactions.filter((t) => t.decided && String(t.extId).startsWith('bingx:')).map((t) => [t.extId, t]));
-  const cut = result.to ? new Date(String(result.to).replace(' ', 'T')).getTime() : 0;
+  const deleted = s.deletedExt || {};
+  const cut = result.toMs || (result.to ? new Date(String(result.to).replace(' ', 'T')).getTime() : 0);
   // Statement ersetzt alle bisherigen Auszug-Buchungen und API-Trades bis zum Auszugsende
   s.transactions = s.transactions.filter((t) => {
     const id = String(t.extId || '');
@@ -207,5 +230,8 @@ export function apply(result) {
     if (id.startsWith('bingxapi:') && new Date(t.date).getTime() <= cut) return false;
     return true;
   });
-  for (const t of result.txs) s.transactions.push(decided.has(t.extId) ? { ...decided.get(t.extId), seq: t.seq } : t);
+  for (const t of result.txs) {
+    if (deleted[t.extId]) continue; // von dir gelöscht -> bleibt gelöscht
+    s.transactions.push(decided.has(t.extId) ? { ...decided.get(t.extId), seq: t.seq } : t);
+  }
 }

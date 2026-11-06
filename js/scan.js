@@ -335,7 +335,7 @@ export function parseSwissQR(txt) {
 // ---------- Texterkennung ----------
 export async function ocr(canvas, onProgress = () => {}) {
   const T = await LIB.tesseract();
-  const worker = await T.createWorker('deu', 1, { logger: (m) => { if (m.status === 'recognizing text') onProgress(m.progress); } });
+  const worker = await T.createWorker('deu', 1, { ...LIB.tesseractOptions(), logger: (m) => { if (m.status === 'recognizing text') onProgress(m.progress); } });
   try { const { data } = await worker.recognize(canvas); return data.text || ''; } finally { await worker.terminate(); }
 }
 

@@ -48,7 +48,12 @@ export async function pair(url, code) {
   return h;
 }
 
-export function unpair() { const s = S(); s.server = { url: '', token: '', lastSync: null, lastReminders: '', push: false, status: null }; commit(); }
+// Trennen: Token auf dem Server widerrufen (falls erreichbar), dann lokal löschen
+export async function unpair() {
+  try { if (isConfigured()) await api('/api/unpair', { method: 'POST', body: {}, timeout: 5000 }); } catch (e) { /* offline: lokal trotzdem trennen */ }
+  try { const reg = await navigator.serviceWorker?.ready; const sub = await reg?.pushManager?.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) { /* egal */ }
+  const s = S(); s.server = { url: '', token: '', lastSync: null, lastReminders: '', push: false, status: null }; commit();
+}
 
 // ---------- Push ----------
 const b64ToBytes = (s) => { s = s.replace(/-/g, '+').replace(/_/g, '/'); s += '='.repeat((4 - (s.length % 4)) % 4); return Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); };
@@ -102,12 +107,18 @@ export async function syncReminders(force = false) {
 // Nur Trades NACH dem Ende des letzten Kontoauszugs, damit nichts doppelt zählt.
 export async function syncBingx() {
   const s = S(); const c = cfg();
-  const cutoff = s.imports.BingX && s.imports.BingX.to ? new Date(String(s.imports.BingX.to).replace(' ', 'T')).getTime() : 0;
+  const im = s.imports.BingX;
+  const cutoff = im ? (im.toMs || (im.to ? new Date(String(im.to).replace(' ', 'T')).getTime() : 0)) : 0;
   const r = await api('/api/bingx/trades?since=' + cutoff, { timeout: 15000 });
   const have = new Set(s.transactions.map((t) => t.extId));
+  const deleted = s.deletedExt || {};
+  const sym = (x) => /^[A-Z0-9]{1,20}$/.test(String(x || ''));
+  const pos = (x) => Number.isFinite(+x) && +x >= 0;
   let added = 0;
-  for (const t of r.trades) {
-    const id = 'bingxapi:' + t.id; if (have.has(id) || t.time <= cutoff) continue;
+  for (const t of Array.isArray(r.trades) ? r.trades : []) {
+    // Server-Daten nie blind vertrauen
+    if (!t || !sym(t.base) || !sym(t.quote) || !pos(t.qty) || !pos(t.quoteQty) || !pos(t.fee) || !Number.isFinite(+t.time)) continue;
+    const id = 'bingxapi:' + t.id; if (have.has(id) || deleted[id] || t.time <= cutoff) continue;
     const date = new Date(t.time).toISOString();
     const rate = await historicalCHF(t.quote, date);
     const chf = rate != null && t.quoteQty ? +(t.quoteQty * rate).toFixed(2) : null;

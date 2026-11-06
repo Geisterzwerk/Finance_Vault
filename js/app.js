@@ -1,12 +1,13 @@
 // =====================================================================
-// app.js – Start, Sperrbildschirm, Navigation, Kurse, Meilensteine
+// app.js – Start, Sperrbildschirm, Navigation, Kurse, Meilensteine,
+// automatisches Sperren, App-Updates
 // =====================================================================
-import { isSetUp, setup, unlock, lock, isUnlocked } from './vault.js';
-import { S, setState, emptyState, defaultGoals, commit, onChange, flush } from './store.js';
+import { isSetUp, setup, unlock, lock, isUnlocked, lockoutRemaining, backupInfo, importBackup } from './vault.js';
+import { S, setState, clearState, emptyState, defaultGoals, commit, onChange, flush } from './store.js';
 import { holdings, checkMilestones } from './calc.js';
 import * as SRV from './server.js';
 import { refreshPrices } from './prices.js';
-import { $, toast, closeAll, refreshSheet, sheetOpen, closeSheet } from './ui.js';
+import { $, esc, toast, closeAll, closeSheet, refreshSheet, sheetOpen } from './ui.js';
 import { dashboard, invest, goals, celebrate } from './views-main.js';
 import { taxes, invoices, vault, ui as taxUi } from './views-more.js';
 
@@ -17,22 +18,32 @@ const route = () => { const [a, b] = location.hash.replace(/^#\/?/, '').split('/
 function render() {
   if (!isUnlocked()) return;
   const { a, b } = route();
-  const page = (ROUTES[a] || dashboard)(b);
+  const view = Object.hasOwn(ROUTES, a) ? ROUTES[a] : dashboard;
+  let page;
+  try { page = view(b); } catch (e) {
+    console.error(e);
+    page = { title: 'Fehler', html: `<div class="card"><b>Diese Ansicht konnte nicht angezeigt werden.</b><div class="small mut mt">${esc(e.message)}</div></div>` };
+  }
   $('#title').innerHTML = page.title;
   $('#sub').innerHTML = page.sub || '';
   $('#back').hidden = !(a === 'ziele' || (a === 'vault' && b));
-  const inner = document.createElement('div'); inner.innerHTML = page.html;
+  const inner = document.createElement('div'); inner.className = 'page'; inner.innerHTML = page.html;
   $('#view').replaceChildren(inner);
-  page.bind && page.bind(inner);
-  document.querySelectorAll('.tabbar a').forEach((x, i) => x.classList.toggle('sel', i === (TAB[a] ?? 0)));
+  if (page.bind) page.bind(inner);
+  document.querySelectorAll('.tabbar a').forEach((x, i) => {
+    const on = i === (TAB[a] ?? 0);
+    x.classList.toggle('sel', on);
+    if (on) x.setAttribute('aria-current', 'page'); else x.removeAttribute('aria-current');
+  });
 }
 
 // ---------- Kurse + Meilensteine ----------
 async function updatePrices(manual = false) {
+  if (!isUnlocked()) return;
   const h = holdings();
   const r = await refreshPrices(Object.keys(h).filter((k) => h[k].qty > 1e-8));
-  if (manual) toast(r.ok ? 'Kurse aktualisiert' : r.reason === 'offline' ? 'Offline – letzter Stand bleibt' : 'Kurse nicht erreichbar');
-  milestones();
+  if (manual) toast(r.ok ? 'Kurse aktualisiert' : r.reason === 'offline' ? 'Offline – letzter Stand bleibt' : r.reason === 'busy' ? 'Kurse werden bereits geladen' : 'Kurse nicht erreichbar');
+  if (isUnlocked()) milestones();
 }
 function milestones() {
   const fresh = checkMilestones();
@@ -40,36 +51,86 @@ function milestones() {
 }
 
 // ---------- Sperrbildschirm ----------
+const fmtWait = (ms) => (ms >= 60e3 ? `${Math.ceil(ms / 60e3)} Min.` : `${Math.ceil(ms / 1000)} s`);
 async function showLock() {
   const first = !(await isSetUp());
   const el = $('#lock'); el.hidden = false;
-  el.innerHTML = `<div class="lockbox">
+  el.innerHTML = `<form class="lockbox" autocomplete="on" novalidate>
     <div class="brand">FINANCE VAULT</div><div class="serif lockt">${first ? 'Willkommen' : 'Entsperren'}</div>
-    <div class="small mut">${first ? 'Lege einen PIN fest (mind. 6 Zeichen). Er verschlüsselt alle Daten auf diesem Gerät. Ohne PIN gibt es keinen Zugriff, auch nicht für dich. Notiere ihn sicher.' : 'Deine Daten sind verschlüsselt.'}</div>
-    <input id="pin" type="password" inputmode="numeric" autocomplete="${first ? 'new-password' : 'current-password'}" placeholder="PIN">
-    ${first ? '<input id="pin2" type="password" inputmode="numeric" autocomplete="new-password" placeholder="PIN wiederholen">' : ''}
-    <button class="btn gold block big" id="go">${first ? 'Vault erstellen' : 'Entsperren'}</button>
-    <div class="small" id="msg"></div></div>`;
-  const pin = $('#pin'); setTimeout(() => pin.focus(), 100);
-  const go = async () => {
-    const msg = $('#msg');
+    <div class="small mut">${first ? 'Lege einen PIN oder ein Passwort fest (mind. 6 Zeichen). Er verschlüsselt alle Daten auf diesem Gerät. Ohne ihn gibt es keinen Zugriff, auch nicht für dich. Sicher notieren!' : 'Deine Daten sind verschlüsselt.'}</div>
+    <input type="text" name="username" value="Finance Vault" autocomplete="username" hidden>
+    <input id="pin" type="password" autocomplete="${first ? 'new-password' : 'current-password'}" autocapitalize="off" spellcheck="false" placeholder="PIN / Passwort" aria-label="PIN oder Passwort">
+    ${first ? '<input id="pin2" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Wiederholen" aria-label="PIN wiederholen"><div class="small mut" id="str"></div>' : ''}
+    <button type="submit" class="btn gold block big" id="go">${first ? 'Vault erstellen' : 'Entsperren'}</button>
+    <div class="small" id="msg" role="status" aria-live="polite"></div>
+    ${first ? '<label class="btn line block mt">⬆ Backup wiederherstellen<input type="file" id="restore" accept=".json,application/json" hidden></label>' : ''}</form>`;
+  const form = el.querySelector('form'); const pin = $('#pin'); const msg = $('#msg'); const btn = $('#go');
+  setTimeout(() => pin.focus(), 100);
+  if (first) pin.addEventListener('input', () => {
+    $('#str').textContent = !pin.value ? '' : /^\d+$/.test(pin.value) ? 'Nur Ziffern: bequem, aber schwach. Eine Passphrase (Wörter) ist viel sicherer.' : pin.value.length < 10 ? 'Gut – länger ist noch sicherer.' : 'Stark.';
+  });
+  if (first) $('#restore').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreOnWelcome(f); });
+  let busy = false;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (busy) return;
     if (first) {
-      if (pin.value.length < 6) return (msg.textContent = 'Mindestens 6 Zeichen');
-      if (pin.value !== $('#pin2').value) return (msg.textContent = 'PINs stimmen nicht überein');
-      msg.textContent = 'Verschlüssele …';
-      const st = emptyState(); st.goals = defaultGoals(st);
-      await setup(pin.value, st); setState(st);
-    } else {
-      msg.textContent = 'Prüfe …';
-      const st = await unlock(pin.value);
-      if (!st) { msg.textContent = 'Falscher PIN'; pin.value = ''; pin.focus(); return; }
-      setState(st);
+      if (pin.value.length < 6) { msg.textContent = 'Mindestens 6 Zeichen'; return; }
+      if (pin.value !== $('#pin2').value) { msg.textContent = 'Eingaben stimmen nicht überein'; return; }
     }
-    el.hidden = true; el.innerHTML = '';
-    start();
-  };
-  $('#go').addEventListener('click', go);
-  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    busy = true; btn.disabled = true;
+    try {
+      if (first) {
+        msg.textContent = 'Verschlüssele …';
+        const st = emptyState(); st.goals = defaultGoals(st);
+        await setup(pin.value, st); setState(st);
+      } else {
+        msg.textContent = 'Prüfe …';
+        let st;
+        try { st = await unlock(pin.value); } catch (err) {
+          if (err.wait) { msg.textContent = `Zu viele Fehlversuche. Bitte ${fmtWait(err.wait)} warten.`; return; }
+          throw err;
+        }
+        if (!st) {
+          const wait = await lockoutRemaining();
+          msg.textContent = wait ? `Falscher PIN. Nächster Versuch in ${fmtWait(wait)}.` : 'Falscher PIN';
+          pin.value = ''; pin.focus(); return;
+        }
+        setState(st);
+      }
+      pin.value = '';
+      el.hidden = true; el.innerHTML = '';
+      start();
+    } catch (err) {
+      console.error(err); msg.textContent = 'Fehler: ' + err.message;
+    } finally { busy = false; btn.disabled = false; }
+  });
+}
+
+// Backup direkt auf dem Willkommen-Bildschirm laden (z. B. nach Neuinstallation)
+async function restoreOnWelcome(file) {
+  const el = $('#lock'); let text, info;
+  try { text = await file.text(); info = backupInfo(text); } catch (err) { $('#msg').textContent = err.message; return; }
+  el.innerHTML = `<form class="lockbox" novalidate>
+    <div class="brand">FINANCE VAULT</div><div class="serif lockt">Backup laden</div>
+    <div class="small mut">${info.exported ? 'Backup vom ' + esc(new Date(info.exported).toLocaleDateString('de-CH')) + '. ' : ''}${info.needsPassword ? 'Backup-Passwort und PIN des Backups eingeben.' : 'Älteres Backup: nur PIN des Backups eingeben. Danach ein neues Backup mit Backup-Passwort erstellen.'}</div>
+    ${info.needsPassword ? '<input id="bp" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Backup-Passwort" aria-label="Backup-Passwort">' : ''}
+    <input id="bpin" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" placeholder="PIN des Backups" aria-label="PIN des Backups">
+    <button type="submit" class="btn gold block big" id="go">Wiederherstellen</button>
+    <button type="button" class="btn line block" id="cancel">Abbrechen</button>
+    <div class="small" id="msg" role="status" aria-live="polite"></div></form>`;
+  $('#cancel').addEventListener('click', showLock);
+  el.querySelector('form').addEventListener('submit', async (e) => {
+    e.preventDefault(); const btn = $('#go'); btn.disabled = true; $('#msg').textContent = 'Prüfe …';
+    try { await importBackup(text, { password: $('#bp')?.value || '', pin: $('#bpin').value }); location.reload(); }
+    catch (err) { $('#msg').textContent = err.message || 'Backup ungültig'; btn.disabled = false; }
+  });
+}
+
+function doLock() {
+  lock(); clearState(); closeAll();
+  $('#view').replaceChildren(); $('#title').textContent = ''; $('#sub').textContent = '';
+  showLock();
 }
 
 let started = false;
@@ -83,14 +144,23 @@ function start() {
 let srvTimer;
 onChange(() => { clearTimeout(srvTimer); srvTimer = setTimeout(() => { if (isUnlocked() && SRV.isConfigured()) SRV.syncReminders().catch(() => {}); }, 4000); });
 
-// ---------- Automatisch sperren ----------
+// ---------- Automatisch sperren + Sichtschutz im App-Umschalter ----------
 let hiddenAt = null;
 document.addEventListener('visibilitychange', async () => {
+  if (document.hidden) {
+    document.body.classList.add('cover'); // verdeckt Beträge im App-Umschalter-Vorschaubild
+    if (!isUnlocked()) return;
+    hiddenAt = Date.now(); await flush().catch(() => {});
+    return;
+  }
+  document.body.classList.remove('cover');
+  checkForUpdate();
   if (!isUnlocked()) return;
-  if (document.hidden) { hiddenAt = Date.now(); await flush().catch(() => {}); }
-  else if (hiddenAt && Date.now() - hiddenAt > (S().settings.autoLockMin || 5) * 60e3) { lock(); closeAll(); $('#view').innerHTML = ''; showLock(); }
+  if (hiddenAt && Date.now() - hiddenAt > (S().settings.autoLockMin || 5) * 60e3) doLock();
   else { updatePrices(); SRV.syncAll(); }
+  hiddenAt = null;
 });
+addEventListener('pagehide', () => { if (isUnlocked()) flush().catch(() => {}); });
 addEventListener('online', () => isUnlocked() && updatePrices());
 
 // ---------- Events ----------
@@ -107,27 +177,51 @@ $('#sheet-bg').addEventListener('click', closeAll);
 $('#refresh').addEventListener('click', () => updatePrices(true));
 $('#sub').addEventListener('click', (e) => { const yb = e.target.closest('[data-y]'); if (yb) { taxUi.taxYear += +yb.dataset.y; render(); } });
 
-showLock();
-if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+// ---------- iPhone: Ansicht nach dem Schliessen der Tastatur zurücksetzen ----------
+// iOS scrollt beim Fokussieren eines Feldes das ganze Dokument nach oben. Weil
+// das Layout fest am Bildschirm hängt, bleibt danach ein verschobener Bereich
+// bzw. ein Spalt unter der Tab-Leiste. Sobald kein Feld mehr fokussiert ist,
+// wird das Dokument wieder auf 0 gesetzt (nicht während die Tastatur offen ist).
+const isField = (el) => el && el.matches && el.matches('input, select, textarea, [contenteditable]');
+function resetScroll() { if (!isField(document.activeElement) && (window.scrollY || window.scrollX)) window.scrollTo(0, 0); }
+document.addEventListener('focusout', () => setTimeout(resetScroll, 80));
+window.visualViewport?.addEventListener('resize', () => {
+  if (window.visualViewport.height > window.innerHeight * 0.85) setTimeout(resetScroll, 50);
+});
 
-// iPhone: nach dem Schliessen der Tastatur die Ansicht zurücksetzen
-document.addEventListener('focusout', () => {
-  setTimeout(() => window.scrollTo(window.scrollX, window.scrollY), 60);
-});
-window.visualViewport?.addEventListener('resize', () => {
-  if (window.visualViewport.height >= window.innerHeight - 1) window.scrollTo(window.scrollX, window.scrollY);
-});
-// iPhone: nach dem Schliessen der Tastatur verschobene Ansicht zurücksetzen
-document.addEventListener('focusout', () => {
-  setTimeout(() => window.scrollTo(window.scrollX, window.scrollY), 60);
-});
-window.visualViewport?.addEventListener('resize', () => {
-  if (window.visualViewport.height >= window.innerHeight - 1) window.scrollTo(window.scrollX, window.scrollY);
-});
-window.visualViewport?.addEventListener('resize', () => window.scrollTo(0, 0));
-// Auswahlknöpfe (Chips) überall anklickbar machen
-document.addEventListener('click', (e) => {
-  const c = e.target.closest('[data-chips] .chip');
-  if (!c) return;
-  c.closest('[data-chips]').querySelectorAll('.chip').forEach((x) => x.classList.toggle('sel', x === c));
-});
+// ---------- App-Updates ----------
+// iOS lädt eine Home-Bildschirm-App oft tagelang nicht neu. Beim Zurückkehren
+// in die App wird deshalb aktiv nach einer neuen Version gesucht. Ist eine da,
+// erscheint ein Hinweis (gesperrt: sofortiges Neuladen).
+let swReg = null; let deployTag = null; let updateShown = false;
+async function currentDeployTag() {
+  try {
+    const r = await fetch('./index.html', { method: 'HEAD', cache: 'no-store' });
+    return r.ok ? (r.headers.get('etag') || r.headers.get('last-modified')) : null;
+  } catch (e) { return null; }
+}
+function offerUpdate() {
+  if (updateShown) return;
+  if (!isUnlocked()) { location.reload(); return; }
+  updateShown = true;
+  const bar = document.createElement('button');
+  bar.className = 'updatebar'; bar.type = 'button'; bar.textContent = 'Neue Version verfügbar – tippen zum Neuladen';
+  bar.addEventListener('click', async () => { bar.disabled = true; await flush().catch(() => {}); location.reload(); });
+  document.body.appendChild(bar);
+}
+async function checkForUpdate() {
+  if (!navigator.onLine || location.protocol === 'file:') return;
+  try { await swReg?.update(); } catch (e) { /* offline */ }
+  const tag = await currentDeployTag();
+  if (tag && deployTag && tag !== deployTag) offerUpdate();
+  if (tag && !deployTag) deployTag = tag;
+}
+
+showLock();
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((r) => { swReg = r; }).catch(() => {});
+  // Neuer Service Worker hat übernommen -> Seite läuft noch mit altem Code
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) offerUpdate(); });
+}
+currentDeployTag().then((t) => { deployTag = t; });
