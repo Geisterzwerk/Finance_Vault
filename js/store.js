@@ -77,6 +77,21 @@ export function demoState() {
     { id: uid(), name: 'VIAC Invest', kind: 'securities', value: 4500, updated: d(2026, 11, 1) },
   );
   s.goals = defaultGoals(s);
+  // Demo: Kursverläufe (deterministischer Zufallspfad) und Kontoverlauf, damit die Grafiken etwas zeigen
+  let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const now = Date.now(); const ids = { bitcoin: 88000, chainlink: 14.5, solana: 175, kaspa: 0.21, ripple: 1.9, 'sei-network': 0.42, 'avalanche-2': 31 };
+  const live = { BTC: 'bitcoin', LINK: 'chainlink', SOL: 'solana', KAS: 'kaspa', XRP: 'ripple', SEI: 'sei-network', AVAX: 'avalanche-2' };
+  for (const [id, end] of Object.entries(ids)) {
+    const p = []; let v = end * (0.7 + rnd() * 0.25);
+    for (let i = 365; i >= 0; i--) { v *= 1 + (rnd() - 0.47) * 0.045; p.push([now - i * 864e5, +v.toPrecision(8)]); }
+    const k = end / p[p.length - 1][1]; s.histCache[id] = { at: now, p: p.map(([t, x]) => [t, +(x * k).toPrecision(8)]) };
+  }
+  for (const [sym, id] of Object.entries(live)) s.prices[sym] = { chf: ids[id], change24h: (rnd() - 0.5) * 6, at: new Date().toISOString() };
+  s.pricesAt = new Date().toISOString();
+  for (const a of s.accounts) {
+    const steps = 10; a.history = [];
+    for (let i = steps; i >= 1; i--) a.history.push({ at: new Date(now - i * 36 * 864e5).toISOString(), value: Math.round(a.value * (1 - i * 0.035 + (rnd() - 0.5) * 0.02)) });
+  }
   s.invoices.push(
     { id: uid(), issuer: 'TEKO Basel', number: '2027-18492', title: 'Semesterrechnung', amount: 2450, due: d(2026, 11, 30).slice(0, 10), status: 'open', category: 'Studium', tax: 'maybe', ziffer: '650', created: d(2026, 11, 2) },
     { id: uid(), issuer: 'Swisscom', number: '88412', title: 'Mobile November', amount: 54.9, due: d(2026, 11, 3).slice(0, 10), status: 'open', category: 'Kommunikation', tax: 'no', created: d(2026, 10, 20) },

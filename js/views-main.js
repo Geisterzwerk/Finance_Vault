@@ -2,12 +2,14 @@
 // views-main.js – Übersicht, Invest, Coin-Detail, Konten, Ziele
 // =====================================================================
 import { S, commit, uid, deleteTx } from './store.js';
-import { TYPES, ACCOUNT_KINDS, portfolio, netWorth, holdings, goalProgress, reviewCount, typeInfo, staleMilestones, resetMilestones } from './calc.js';
+import { TYPES, ACCOUNT_KINDS, portfolio, netWorth, holdings, goalProgress, reviewCount, typeInfo, staleMilestones, resetMilestones, valueSeries } from './calc.js';
 import { coinId } from './prices.js';
 import { closingDue } from './taxpack.js';
 import { openEstimate, missingOpenings } from './estimate.js';
+import { ring, legend, area, progress, lastId, SLOTS, OTHER, gc } from './charts.js';
+import { loadHistory } from './prices.js';
 import {
-  esc, chf, qty, price, pct, cls, dmy, dmyShort, hm, ago, daysUntil, greeting, longDate, bar, icon,
+  esc, chf, qty, price, pct, cls, dmy, dmyShort, hm, ago, daysUntil, greeting, longDate, icon,
   openSheet, closeSheet, toast, chips, chipVal, bindChips, confetti, rerender,
 } from './ui.js';
 
@@ -24,10 +26,56 @@ const avgCell = (x) => (x.avg != null ? (x.estimated ? `<span class="amber" titl
 // =====================================================================
 // ÜBERSICHT
 // =====================================================================
+// Farben: Kategorien fest, Coins behalten ihre einmal vergebene Farbe (folgt dem Coin, nicht dem Rang)
+export const GOAL_COLOR = { gold: SLOTS[0], orange: SLOTS[0], blue: SLOTS[1], teal: SLOTS[1], green: SLOTS[2], purple: SLOTS[4] };
+const CAT = [['crypto', 'Crypto', SLOTS[0]], ['pillar3a', 'Säule 3a', SLOTS[1]], ['securities', 'Wertschriften', SLOTS[2]], ['cash', 'Bank & Cash', SLOTS[3]]];
+function coinSegments(held) {
+  const s = S(); const used = new Set(); const top = held.filter((x) => x.value > 0).slice(0, 5);
+  // BTC bekommt – wenn noch frei – das Gold (Slot 0); Farben bleiben danach fest beim Coin
+  const btc = top.find((x) => x.asset === 'BTC');
+  if (btc && (s.coins.BTC || {}).slot == null && !held.some((x) => x !== btc && (s.coins[x.asset] || {}).slot === 0)) s.coins.BTC = { ...(s.coins.BTC || {}), slot: 0 };
+  for (const x of held) { const sl = (s.coins[x.asset] || {}).slot; if (sl != null && top.includes(x)) used.add(sl); }
+  const segs = top.map((x) => {
+    let sl = (s.coins[x.asset] || {}).slot;
+    if (sl == null || (used.has(sl) && top.find((y) => y !== x && (s.coins[y.asset] || {}).slot === sl))) {
+      sl = [0, 1, 2, 3, 4].find((k) => !used.has(k)); used.add(sl);
+      s.coins[x.asset] = { ...(s.coins[x.asset] || {}), slot: sl };
+    }
+    return { label: x.asset, value: x.value, color: SLOTS[sl] ?? OTHER, sub: qty(x.qty) };
+  });
+  const rest = held.filter((x) => x.value > 0 && !top.includes(x));
+  if (rest.length) segs.push({ label: 'Andere', value: rest.reduce((a, x) => a + x.value, 0), color: OTHER, sub: rest.length + ' Coins' });
+  return segs;
+}
+export const ui0 = { range: 90 };
+function trendCard(kind, title) {
+  const R = ui0.range;
+  const { pts, missing } = valueSeries(R, kind);
+  const first = pts.find((p) => !p.gap) || pts[0]; const last = pts[pts.length - 1];
+  const delta = first && last ? last.v - first.v : null;
+  const dp = first && first.v ? (delta / first.v) * 100 : null;
+  return `<div class="card">
+    <div class="row"><div class="lbl grow">${title}</div>
+      <div class="seg mini" data-range>${[[30, '1M'], [90, '3M'], [365, '1J']].map(([d, l]) => `<button class="${R === d ? 'sel' : ''}" data-r="${d}">${l}</button>`).join('')}</div></div>
+    ${delta != null ? `<div class="trend-h"><span class="${cls(delta)}">${chf(delta, 0, true)}</span><span class="mut small">${pct(dp)} · ${R === 365 ? '12 Monate' : R === 90 ? '3 Monate' : '30 Tage'}</span></div>` : ''}
+    ${area(pts, { color: kind === 'crypto' ? SLOTS[0] : SLOTS[0], fmt: (v) => chf(v), label: title, height: 150 })}
+    ${missing.length ? `<div class="small mut mt">Ohne Kursverlauf: ${esc(missing.join(', '))} – diese Tage sind zu tief. <button class="link sm" data-act="loadhist" data-syms="${esc(missing.join(','))}">Verlauf laden</button></div>` : ''}
+  </div>`;
+}
+function bindTrend(el) {
+  el.addEventListener('click', async (e) => {
+    const r = e.target.closest('[data-r]'); if (r) { ui0.range = +r.dataset.r; dispatchEvent(new Event('rerender')); return; }
+    const h = e.target.closest('[data-act=loadhist]'); if (!h) return;
+    if (!navigator.onLine) return toast('Offline');
+    h.disabled = true;
+    await loadHistory(h.dataset.syms.split(','), (i, n, sym) => { h.textContent = `Lade ${sym} (${i}/${n}) …`; });
+    dispatchEvent(new Event('rerender'));
+  });
+}
+
 export function dashboard() {
+  gc();
   const s = S(); const nw = netWorth(); const rc = reviewCount();
-  const segs = [['crypto', 'Crypto', 'gold'], ['pillar3a', 'Säule 3a', 'teal'], ['securities', 'ETF', 'blue'], ['cash', 'Cash', 'mut']];
-  const tot = Math.max(1, nw.assets);
   const g1 = s.goals.find((g) => g.kind === 'networth');
   const g2 = s.goals.find((g) => g.kind === 'asset' && g.asset === 'BTC');
   const inv = openInvoicesSummary();
@@ -38,40 +86,39 @@ export function dashboard() {
   const missing = nw.pf.held.filter((x) => x.quality === 'missing').length;
   const closing = closingDue();
   const inboxDocs = (s.documents || []).filter((d) => d.status === 'inbox').length;
-  const goalCard = (g, color) => {
+  const segs = CAT.map(([k, l, c]) => ({ label: l, value: Math.max(0, nw[k]), color: c }));
+  const goalCard = (g) => {
     if (!g) return '';
     const p = goalProgress(g, nw);
-    return `<div class="card clickable" data-go="#/ziele">
-      <div class="lbl ${color}">${g.kind === 'networth' ? 'Nächster Meilenstein' : esc(g.name) + '-Ziel'}</div>
-      <div class="row"><div class="serif big2 grow">${p.done ? 'Alle erreicht' : fmtGoal(p.next, g.unit)}</div><b class="gold2">${(p.pct * 100).toFixed(1)} %</b></div>
-      ${bar(p.pct, color)}
-      <div class="small mut">${p.done ? 'Neue Meilensteine unter Ziele hinzufügen' : `Aktuell ${fmtGoal(p.value, g.unit)} · noch ${fmtGoal(p.next - p.value, g.unit)}`}</div></div>`;
+    return `<div class="card clickable row" data-go="#/ziele">${progress(p.pct, GOAL_COLOR[g.color] || SLOTS[0])}
+      <div class="grow"><div class="lbl">${g.kind === 'networth' ? 'Nächster Meilenstein' : esc(g.name) + '-Ziel'}</div>
+      <div class="big2">${p.done ? 'Alle erreicht' : fmtGoal(p.next, g.unit)}</div>
+      <div class="small mut">${p.done ? 'Neue Meilensteine unter Ziele' : `noch ${fmtGoal(p.next - p.value, g.unit)}`}</div></div><span class="chev">›</span></div>`;
   };
+  const center = { label: 'Nettovermögen', value: chf(nw.net), sub: nw.pf.unrealPct != null ? `Crypto ${pct(nw.pf.unrealPct)} unrealisiert` : longDate() };
   return {
     title: `${greeting()}, ${esc(s.settings.name)}`,
     sub: `${longDate()} <span class="live ${live ? 'on' : ''}">${live ? '● Kurse live · ' + hm(s.pricesAt) : s.pricesAt ? 'Kurse ' + dmyShort(s.pricesAt) + ' ' + hm(s.pricesAt) : 'Noch keine Kurse'}</span>`,
     html: `
-    <div class="card hero">
-      <div class="lbl">Gesamtvermögen</div>
-      <div class="serif huge">${chf(nw.net)}</div>
-      ${nw.pf.unrealPct != null ? `<div class="${cls(nw.pf.unreal)} b">Crypto ${chf(nw.pf.unreal, 0, true)} · ${pct(nw.pf.unrealPct)} unrealisiert</div>` : ''}
-      <div class="stack">${segs.map(([k, , c]) => `<i class="${c}" style="width:${(nw[k] / tot) * 100}%"></i>`).join('')}</div>
-      <div class="legend">${segs.map(([k, l, c]) => `<span><i class="dotc ${c}"></i>${l} ${((nw[k] / tot) * 100).toFixed(0)} %</span>`).join('')}</div>
-      ${nw.liability ? `<div class="small mut">Verbindlichkeiten ${chf(-nw.liability)} bereits abgezogen</div>` : ''}
+    <div class="card hero ringwrap">
+      ${ring(segs, { size: 236, thick: 11, center, fmt: (v) => chf(v) })}
+      ${legend(segs, Math.max(1, segs.reduce((a, x) => a + x.value, 0)), (v) => chf(v), lastId())}
+      ${nw.liability ? `<div class="small mut mt">Verbindlichkeiten ${chf(-nw.liability)} sind im Nettovermögen abgezogen.</div>` : ''}
     </div>
-    ${goalCard(g1, 'gold')}
+    ${trendCard('net', 'Verlauf Nettovermögen')}
+    ${goalCard(g1)}
     <div class="grid2">
-      <div class="card clickable" data-go="#/rechnungen"><div class="lbl">Rechnungen</div><div class="serif big2">${chf(inv.sum)}</div>
+      <div class="card clickable" data-go="#/rechnungen"><div class="lbl">Rechnungen</div><div class="big2">${chf(inv.sum)}</div>
         <div class="small ${inv.over ? 'neg' : inv.open.length ? 'amber' : 'pos'}">${inv.open.length ? `${inv.open.length} offen${inv.over ? ' · ' + inv.over + ' überfällig' : ''}` : 'Alles bezahlt'}</div></div>
-      <div class="card clickable" data-go="#/steuern"><div class="lbl">Steuern ${yr}</div><div class="serif big2">${taxDone} / ${TAX_TOTAL}</div>
-        ${bar(taxDone / TAX_TOTAL, 'green')}<div class="small mut">Checkliste</div></div>
+      <div class="card clickable row" data-go="#/steuern">${progress(taxDone / TAX_TOTAL, SLOTS[2], 46)}<div class="grow"><div class="lbl nowrap">Steuern</div><div class="big1">${yr}</div><div class="small mut">${taxDone} von ${TAX_TOTAL}</div></div></div>
     </div>
-    ${closing ? `<div class="card clickable row goldb" data-go="#/steuern">${icon('warn')}<div class="grow"><b>Jahresabschluss ${closing}</b><div class="small mut">Daten prüfen, Bestand per 31.12. einfrieren, Steuerpaket erstellen</div></div><span class="gold">›</span></div>` : ''}
-    ${rc + inboxDocs ? `<div class="card clickable row" data-go="#/vault/inbox">${icon('warn')}<div class="grow"><b>Finance Inbox</b><div class="small mut">${[rc ? rc + ' Transaktion' + (rc > 1 ? 'en' : '') + ' zuordnen' : '', inboxDocs ? inboxDocs + ' Dokument' + (inboxDocs > 1 ? 'e' : '') + ' prüfen' : ''].filter(Boolean).join(' · ')}</div></div><span class="gold">›</span></div>` : ''}
-    ${missing ? `<div class="card clickable row" data-go="#/invest">${icon('warn')}<div class="grow"><b>Kaufhistorie unvollständig</b><div class="small mut">Bei ${missing} Coin${missing > 1 ? 's' : ''} fehlt ein Teil der Käufe. Ø-Preis wird nicht erfunden.</div></div><span class="gold">›</span></div>` : ''}
-    ${goalCard(g2, 'orange')}
+    ${closing ? `<div class="card clickable row goldb" data-go="#/steuern">${icon('warn')}<div class="grow"><b>Jahresabschluss ${closing}</b><div class="small mut">Daten prüfen, Bestand per 31.12. einfrieren, Steuerpaket erstellen</div></div><span class="chev">›</span></div>` : ''}
+    ${rc + inboxDocs ? `<div class="card clickable row" data-go="#/vault/inbox">${icon('warn')}<div class="grow"><b>Finance Inbox</b><div class="small mut">${[rc ? rc + ' Transaktion' + (rc > 1 ? 'en' : '') + ' zuordnen' : '', inboxDocs ? inboxDocs + ' Dokument' + (inboxDocs > 1 ? 'e' : '') + ' prüfen' : ''].filter(Boolean).join(' · ')}</div></div><span class="chev">›</span></div>` : ''}
+    ${missing ? `<div class="card clickable row" data-go="#/invest">${icon('warn')}<div class="grow"><b>Kaufhistorie unvollständig</b><div class="small mut">Bei ${missing} Coin${missing > 1 ? 's' : ''} fehlt ein Teil der Käufe.</div></div><span class="chev">›</span></div>` : ''}
+    ${goalCard(g2)}
     ${!s.transactions.length && !s.accounts.length ? `<div class="card"><b>Los geht's</b><div class="small mut">Importiere deine BingX- und Relai-Exporte unter Vault, erfasse deine Konten unter Invest, oder lade Demo-Daten unter Vault › Einstellungen.</div>
       <div class="grid2 mt"><button class="btn gold" data-go="#/vault">Importieren</button><button class="btn line" data-go="#/invest">Konten</button></div></div>` : ''}`,
+    bind: bindTrend,
   };
 }
 
@@ -85,10 +132,13 @@ export function invest() {
   let body = '';
   if (t === 'crypto') {
     const done = pf.list.filter((x) => x.qty <= 1e-8);
-    body = `<div class="card hero"><div class="lbl">Crypto total</div><div class="row"><div class="serif huge grow">${chf(pf.total)}</div>
-      <div class="right"><div class="b ${cls(pf.unreal)}">${chf(pf.unreal, 0, true)}</div><div class="small ${cls(pf.unreal)}">${pct(pf.unrealPct)}</div></div></div>
-      <div class="small mut">Unrealisiert nur für Coins mit vollständiger Kaufhistorie · Realisiert ${chf(pf.realized, 0, true)}${pf.realizedUnknown ? ' <span class="amber">(teilweise unbekannt)</span>' : ''}</div>
+    const segs = coinSegments(pf.held);
+    body = `<div class="card hero ringwrap">
+      ${ring(segs, { size: 220, thick: 11, center: { label: 'Crypto', value: chf(pf.total), sub: pf.unrealPct != null ? `${chf(pf.unreal, 0, true)} · ${pct(pf.unrealPct)}` : '' }, fmt: (v) => chf(v) })}
+      ${legend(segs, Math.max(1, pf.total), (v) => chf(v), lastId())}
+      <div class="small mut mt">Unrealisiert nur für Coins mit vollständiger Kaufhistorie · Realisiert ${chf(pf.realized, 0, true)}${pf.realizedUnknown ? ' <span class="amber">(teilweise unbekannt)</span>' : ''}</div>
       ${pf.missingPrice ? `<div class="small amber">${pf.missingPrice} Coin${pf.missingPrice > 1 ? 's' : ''} ohne Kurs – nicht im Total enthalten</div>` : ''}</div>
+      ${trendCard('crypto', 'Verlauf Crypto')}
       ${missingOpenings().length ? `<div class="card row clickable goldb" data-act="estimate">${icon('warn')}<div class="grow"><b>Kaufpreise fehlen (${missingOpenings().length})</b><div class="small mut">Käufe stehen nicht im Export. Mit historischem Kurs schätzen?</div></div><span class="gold">›</span></div>` : ''}
       <div class="thead"><span>Coin</span><span>Ø Kauf</span><span>Wert / P/L</span></div>
       ${pf.held.map((x) => `<div class="coin clickable" data-coin="${esc(x.asset)}">
@@ -116,7 +166,8 @@ export function invest() {
   return {
     title: 'Invest', sub: t === 'crypto' ? 'Ø Kaufpreis und Performance je Coin' : t === 'konten' ? 'Bank, ETF, Säule 3a, Verbindlichkeiten' : 'Live beim Öffnen, offline mit letztem Stand',
     html: tabs + body,
-    bind: (el) => el.addEventListener('click', (e) => {
+    bind: (el) => { bindTrend(el); el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-r], [data-act=loadhist]')) return;
       const tb = e.target.closest('[data-tab]'); if (tb) { ui.investTab = tb.dataset.tab; dispatchEvent(new Event('rerender')); return; }
       const c = e.target.closest('[data-coin]'); if (c) return openCoin(c.dataset.coin);
       const a = e.target.closest('[data-acc]'); if (a) return openAccount(S().accounts.find((x) => x.id === a.dataset.acc));
@@ -125,7 +176,7 @@ export function invest() {
       if (b.dataset.act === 'addtx') openTx();
       if (b.dataset.act === 'estimate') openEstimate();
       if (b.dataset.act === 'refresh') dispatchEvent(new Event('refreshprices'));
-    }),
+    }); },
   };
 }
 
@@ -143,6 +194,16 @@ export function openCoin(sym) {
       <div class="card hero mt"><div class="lbl">Aktueller Bestand</div><div class="serif huge">${qty(x.qty)} ${esc(sym)}</div>
         <div class="grid2"><div><div class="small mut">Wert</div><b>${chf(x.value)}</b></div><div><div class="small mut">Kurs ${p ? `<span class="pos">● ${Date.now() - new Date(p.at) < 15 * 60e3 ? 'LIVE' : dmyShort(p.at)}</span>` : ''}</div><b>${price(x.price)}</b></div></div>
         <div class="small mt ${x.quality === 'ok' ? 'pos' : 'amber'}">Datenqualität: ${x.quality === 'ok' ? 'vollständig' : x.quality === 'check' ? 'prüfen (CHF-Wert fehlt bei einzelnen Transaktionen)' : `Kaufhistorie fehlt für ${((x.unknownShare || 0) * 100).toFixed(0)} % des Bestands`}</div></div>
+      ${(() => {
+        const c = (s.histCache || {})[coinId(sym) || ''];
+        const pts = c && c.p ? c.p.filter(([ms]) => Date.now() - ms <= 366 * 864e5).map(([t, v]) => ({ t, v })) : [];
+        if (pts.length && p) pts.push({ t: Date.now(), v: p.chf });
+        const first = pts[0], last = pts[pts.length - 1];
+        return `<div class="card"><div class="lbl">Kurs 12 Monate</div>
+          ${first ? `<div class="trend-h"><span>${price(last.v)}</span><span class="small ${cls(last.v - first.v)}">${pct(((last.v - first.v) / first.v) * 100)}</span></div>` : ''}
+          ${pts.length > 1 ? area(pts, { color: SLOTS[(s.coins[sym] || {}).slot ?? 0] || SLOTS[0], fmt: (v) => price(v), label: `Kurs ${sym}`, ref: x.avg != null ? { v: x.avg, label: x.estimated ? 'Ø ≈' : 'Ø Kauf' } : null })
+            : `<button class="btn line block" data-act="loadhist">Kursverlauf laden</button>`}</div>`;
+      })()}
       <div class="grid2">
         <div class="card"><div class="lbl">Ø Kaufpreis</div><div class="serif big2 ${x.estimated ? 'amber' : ''}">${x.avg != null ? (x.estimated ? '≈ ' : '') + price(x.avg) : 'nicht verfügbar'}</div>${x.estimated ? '<div class="small amber">teilweise geschätzt</div>' : ''}
           ${x.avgKnown != null ? `<div class="small amber">≈ ${price(x.avgKnown)} für den bekannten Teil</div>` : ''}<div class="small mut">Investiert (bekannt)</div><b>${chf(x.cost)}</b></div>
@@ -165,6 +226,7 @@ export function openCoin(sym) {
     bind: (el) => el.addEventListener('click', (e) => {
       const t = e.target.closest('[data-tx]'); if (t) return openTx(S().transactions.find((q) => q.id === t.dataset.tx));
       const b = e.target.closest('[data-act]'); if (!b) return;
+      if (b.dataset.act === 'loadhist') { if (!navigator.onLine) return toast('Offline'); b.disabled = true; b.textContent = 'Lade Kursverlauf …'; loadHistory([sym]).then(() => rerender()); return; }
       if (b.dataset.act === 'add') openTx(null, sym);
       if (b.dataset.act === 'estimate') openEstimate();
       if (b.dataset.act === 'hide' && confirm(`${sym} ausblenden? Er zählt dann nirgends mehr mit (Vermögen, Steuer, Zuordnen). Die Buchungen bleiben gespeichert.`)) {
@@ -203,7 +265,7 @@ export function openTx(tx = null, sym = '') {
         <label class="field"><span>Menge</span><input name="amount" inputmode="decimal" value="${esc(d.amount)}"></label>
         <label class="field" data-only="buy sell opening reward fee"><span>Gesamt in CHF</span><input name="chf" inputmode="decimal" value="${esc(d.type === 'transfer' ? '' : d.chf ?? '')}" placeholder="leer = unbekannt"></label>
         <label class="field" data-only="buy sell transfer"><span>Gebühr CHF</span><input name="fee" inputmode="decimal" value="${esc(d.fee || '')}"></label>
-        <label class="field"><span>Datum</span><input name="date" type="datetime-local" value="${esc(localISO(d.date))}"></label>
+        <label class="field span2"><span>Datum</span><input name="date" type="datetime-local" value="${esc(localISO(d.date))}"></label>
         <label class="field"><span>Plattform</span><input name="platform" value="${esc(d.platform)}" placeholder="BingX, Relai"></label>
       </div>
       <div class="grid2" data-only="transfer">
@@ -294,11 +356,10 @@ export function goals() {
     html: s.goals.map((g) => {
       const p = goalProgress(g, nw);
       return `<div class="card clickable ${p.done ? 'goldb' : ''}" data-goal="${g.id}">
-        <div class="lbl ${g.color}">${esc(g.name)}</div>
-        <div class="row"><div class="serif big2 grow">${fmtGoal(p.value, g.unit)}</div><span class="small mut">${p.done ? 'alle erreicht' : 'Ziel ' + fmtGoal(p.next, g.unit)}</span></div>
-        ${bar(p.pct, g.color)}
+        <div class="row">${progress(p.pct, GOAL_COLOR[g.color] || SLOTS[0], 60)}<div class="grow"><div class="lbl">${esc(g.name)}</div>
+        <div class="big2">${fmtGoal(p.value, g.unit)}</div><span class="small mut">${p.done ? 'alle erreicht' : 'Ziel ' + fmtGoal(p.next, g.unit)}</span></div></div>
         ${staleMilestones(g).length ? `<div class="small amber">${staleMilestones(g).length} erreicht, aber aktuell darunter – prüfen</div>` : ''}
-        <div class="row small"><span class="grow mut">${p.reachedCount} von ${p.total} Meilensteinen</span><b class="${g.color}">${(p.pct * 100).toFixed(0)} %</b></div></div>`;
+        <div class="small mut mt">${p.reachedCount} von ${p.total} Meilensteinen erreicht</div></div>`;
     }).join('') + `<button class="btn gold block mt" data-act="add">＋ Ziel hinzufügen</button>
       <div class="small mut mt">Konfetti gibt es nur beim ersten Erreichen eines Meilensteins. Keine Streaks, kein Druck.</div>`,
     bind: (el) => el.addEventListener('click', (e) => {

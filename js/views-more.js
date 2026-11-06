@@ -3,7 +3,6 @@
 // =====================================================================
 import { S, commit, flush, uid, setState, demoState, defaultGoals } from './store.js';
 import { yearEndHoldings, reviewCount, hiddenAssets } from './calc.js';
-import { openEstimate } from './estimate.js';
 import { historicalCHF } from './prices.js';
 import { parseCSV, guessMapping, interpret, preview, toTransactions, ROLES } from './importer.js';
 import * as BX from './bingx.js';

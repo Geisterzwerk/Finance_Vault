@@ -4,6 +4,7 @@
 // Datenqualität, Nettovermögen, Bestand per Stichtag, Meilensteine.
 // =====================================================================
 import { S } from './store.js';
+import { coinId, STABLE_USD } from './prices.js';
 
 export const TYPES = {
   buy: { l: 'Kauf', c: 'green' },
@@ -198,3 +199,53 @@ export function resetMilestones(goal, list) { for (const m of list) delete goal.
 export const typeInfo = (t) => TYPES[t] || { l: String(t || '?'), c: 'grey' };
 export const reviewCount = () => { const h = hiddenAssets(); return S().transactions.filter((t) => t.type === 'review' && !h.has(t.asset)).length; };
 export const yearEndHoldings = (year) => holdings(new Date(year, 11, 31, 23, 59, 59).toISOString());
+
+// ---------------------------------------------------------------------
+// Verläufe für die Grafiken
+// Wert an einem Tag = Bestand an diesem Tag (aus den Transaktionen) × Tageskurs
+// (Zwischenspeicher histCache) + Kontostand an diesem Tag (aus dem Kontoverlauf).
+// Fehlt für einen Coin der Tageskurs, wird er gemeldet statt geschätzt.
+// ---------------------------------------------------------------------
+const DAY = 864e5;
+export function histPrice(sym, t) {
+  const s = S();
+  if (Date.now() - t < DAY / 2 && s.prices[sym]) return s.prices[sym].chf;
+  const c = (s.histCache || {})[coinId(STABLE_USD.includes(sym) ? 'USDT' : sym) || ''];
+  if (c && c.p && c.p.length) {
+    let best = null, bd = Infinity;
+    for (const [ms, v] of c.p) { const d = Math.abs(ms - t); if (d < bd) { bd = d; best = v; } }
+    if (bd <= 2 * DAY) return best;
+  }
+  if (STABLE_USD.includes(sym) && s.prices[sym]) return s.prices[sym].chf; // Stablecoin: aktueller Kurs als Näherung
+  return null;
+}
+function accountAt(a, t) {
+  const pts = [...(a.history || []).map((h) => [new Date(h.at).getTime(), Number(h.value) || 0]), [new Date(a.updated).getTime(), Number(a.value) || 0]]
+    .filter(([ms]) => Number.isFinite(ms)).sort((x, y) => x[0] - y[0]);
+  let v = null; for (const [ms, val] of pts) { if (ms <= t + DAY) v = val; else break; }
+  return v;
+}
+// kind: 'net' (Nettovermögen) oder 'crypto'
+export function valueSeries(days = 90, kind = 'net') {
+  const s = S(); const now = Date.now(); const step = days > 120 ? 3 : 1;
+  const pts = []; const missing = new Set();
+  for (let d = days; d >= 0; d -= step) {
+    const t = d === 0 ? now : now - d * DAY;
+    const h = d === 0 ? holdings() : holdings(new Date(t).setHours(23, 59, 59, 999));
+    let v = 0; let gap = false;
+    for (const x of Object.values(h)) {
+      if (x.qty <= 1e-8) continue;
+      const p = histPrice(x.asset, t);
+      if (p == null) { missing.add(x.asset); gap = true; continue; }
+      v += x.qty * p;
+    }
+    if (kind === 'net') {
+      for (const a of s.accounts) {
+        const av = accountAt(a, t); if (av == null) continue;
+        v += (a.kind === 'liability' ? -1 : 1) * av;
+      }
+    }
+    pts.push({ t, v, gap });
+  }
+  return { pts, missing: [...missing] };
+}

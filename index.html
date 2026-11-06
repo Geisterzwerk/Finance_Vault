@@ -11,7 +11,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; media-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; manifest-src 'self'; connect-src 'self' blob: data: https://api.coingecko.com https://api.frankfurter.dev https://mempool.space https://ethereum-rpc.publicnode.com https://api.avax.network https://api.mainnet-beta.solana.com https://xrplcluster.com https://fullnode.mainnet.sui.io https://rpc.mainnet.near.org https://api.kaspa.org https://rest.sei-apis.com https://api.hyperliquid.xyz https://rpc.hyperliquid.xyz https://*.ts.net http://localhost:8787 http://127.0.0.1:8787">
   <meta name="referrer" content="no-referrer">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0C1626">
+  <meta name="theme-color" content="#1d1e20">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <!--
@@ -34,19 +34,19 @@
     <div class="row">
       <button id="back" class="link" type="button" hidden>‹ Zurück</button>
       <div class="brand grow">FINANCE VAULT</div>
-      <button id="refresh" class="link" type="button" title="Kurse aktualisieren" aria-label="Kurse aktualisieren">↻</button>
-      <a href="#/ziele" class="link" title="Ziele" aria-label="Ziele">◎</a>
+      <button id="refresh" class="iconbtn" type="button" title="Kurse aktualisieren" aria-label="Kurse aktualisieren"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/></svg></button>
+      <a href="#/ziele" class="iconbtn" title="Ziele" aria-label="Ziele"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r=".9" fill="currentColor"/></svg></a>
     </div>
     <h1 id="title" class="serif"></h1>
     <div id="sub" class="sub"></div>
   </header>
   <main id="view"></main>
   <nav class="tabbar" aria-label="Hauptnavigation">
-    <a href="#/"><i aria-hidden="true">◆</i>Übersicht</a>
-    <a href="#/invest"><i aria-hidden="true">▲</i>Invest</a>
-    <a href="#/steuern"><i aria-hidden="true">§</i>Steuern</a>
-    <a href="#/rechnungen"><i aria-hidden="true">≡</i>Rechnungen</a>
-    <a href="#/vault"><i aria-hidden="true">⬢</i>Vault</a>
+    <a href="#/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5V12l6 6"/></svg>Übersicht</a>
+    <a href="#/invest"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 17.5l5.5-5.5 4 4 7.5-8"/><path d="M15 8h5.5v5.5"/></svg>Invest</a>
+    <a href="#/steuern"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 3.5h8l3.5 3.5v13.5h-11.5z"/><path d="M14.5 3.5V7H18"/><path d="M9.5 12h5M9.5 15.5h5"/></svg>Steuern</a>
+    <a href="#/rechnungen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 3.5h13v17l-2.2-1.4-2.1 1.4-2.2-1.4-2.2 1.4-2.1-1.4-2.2 1.4z"/><path d="M9 8.5h6M9 12h6M9 15.5h3.5"/></svg>Rechnungen</a>
+    <a href="#/vault"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="12" cy="12" r="3.2"/><path d="M12 8.8V7.2M15.2 12h1.6M12 15.2v1.6M8.8 12H7.2"/></svg>Vault</a>
   </nav>
   <div id="sheet-bg"></div>
   <section id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">

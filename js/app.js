@@ -56,7 +56,7 @@ async function showLock() {
   const first = !(await isSetUp());
   const el = $('#lock'); el.hidden = false;
   el.innerHTML = `<form class="lockbox" autocomplete="on" novalidate>
-    <div class="brand">FINANCE VAULT</div><div class="serif lockt">${first ? 'Willkommen' : 'Entsperren'}</div>
+    <svg class="monogram" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="mg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b98a5c"/><stop offset=".5" stop-color="#e7c9a1"/><stop offset="1" stop-color="#c79a6c"/></linearGradient></defs><rect x="1.5" y="1.5" width="61" height="61" rx="18" fill="none" stroke="url(#mg)" stroke-width="1.5"/><path d="M21 44V20h13M21 32h10" fill="none" stroke="url(#mg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M36 20l7 24 7-24" fill="none" stroke="url(#mg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="brand">FINANCE VAULT</div><div class="lockt">${first ? 'Willkommen' : 'Entsperren'}</div>
     <div class="small mut">${first ? 'Lege einen PIN oder ein Passwort fest (mind. 6 Zeichen). Er verschlüsselt alle Daten auf diesem Gerät. Ohne ihn gibt es keinen Zugriff, auch nicht für dich. Sicher notieren!' : 'Deine Daten sind verschlüsselt.'}</div>
     <input type="text" name="username" value="Finance Vault" autocomplete="username" hidden>
     <input id="pin" type="password" autocomplete="${first ? 'new-password' : 'current-password'}" autocapitalize="off" spellcheck="false" placeholder="PIN / Passwort" aria-label="PIN oder Passwort">
@@ -112,7 +112,7 @@ async function restoreOnWelcome(file) {
   const el = $('#lock'); let text, info;
   try { text = await file.text(); info = backupInfo(text); } catch (err) { $('#msg').textContent = err.message; return; }
   el.innerHTML = `<form class="lockbox" novalidate>
-    <div class="brand">FINANCE VAULT</div><div class="serif lockt">Backup laden</div>
+    <svg class="monogram" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="mg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b98a5c"/><stop offset=".5" stop-color="#e7c9a1"/><stop offset="1" stop-color="#c79a6c"/></linearGradient></defs><rect x="1.5" y="1.5" width="61" height="61" rx="18" fill="none" stroke="url(#mg)" stroke-width="1.5"/><path d="M21 44V20h13M21 32h10" fill="none" stroke="url(#mg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M36 20l7 24 7-24" fill="none" stroke="url(#mg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="brand">FINANCE VAULT</div><div class="lockt">Backup laden</div>
     <div class="small mut">${info.exported ? 'Backup vom ' + esc(new Date(info.exported).toLocaleDateString('de-CH')) + '. ' : ''}${info.needsPassword ? 'Backup-Passwort und PIN des Backups eingeben.' : 'Älteres Backup: nur PIN des Backups eingeben. Danach ein neues Backup mit Backup-Passwort erstellen.'}</div>
     ${info.needsPassword ? '<input id="bp" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Backup-Passwort" aria-label="Backup-Passwort">' : ''}
     <input id="bpin" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" placeholder="PIN des Backups" aria-label="PIN des Backups">

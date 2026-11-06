@@ -164,3 +164,14 @@ export async function historicalCHF(sym, date) {
   }
   return single[key];
 }
+
+// Kursverläufe für bestimmte Coins laden (für Grafiken), über die Warteschlange
+export async function loadHistory(syms, onStep = () => {}) {
+  let i = 0;
+  for (const sym of syms) {
+    onStep(++i, syms.length, sym);
+    const id = coinId(STABLE_USD.includes(sym) && !KNOWN[sym] ? 'USDT' : sym) || (await resolveId(sym));
+    if (id) await dailySeries(id, 0).catch(() => null);
+  }
+  commit(true);
+}
