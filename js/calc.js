@@ -219,7 +219,7 @@ export function histPrice(sym, t) {
   if (STABLE_USD.includes(sym) && s.prices[sym]) return s.prices[sym].chf; // Stablecoin: aktueller Kurs als Näherung
   return null;
 }
-function accountAt(a, t) {
+export function accountAt(a, t) {
   const pts = [...(a.history || []).map((h) => [new Date(h.at).getTime(), Number(h.value) || 0]), [new Date(a.updated).getTime(), Number(a.value) || 0]]
     .filter(([ms]) => Number.isFinite(ms)).sort((x, y) => x[0] - y[0]);
   let v = null; for (const [ms, val] of pts) { if (ms <= t + DAY) v = val; else break; }

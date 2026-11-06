@@ -108,6 +108,7 @@ export function rowDate(r, offsetMs = 0) {
 }
 const short = (s) => (s && s.length > 10 ? '…' + s.slice(-6) : s || '');
 const addr = (remark) => { const m = /address:\s*(\S+)/i.exec(remark || ''); return m ? m[1] : ''; };
+const txidOf = (remark) => { const m = /transactionId:\s*(\S+)/i.exec(remark || ''); return m ? m[1] : ''; };
 
 // ---------- Rohzeilen -> Ereignisse (inkl. Saldo-Lücken) ----------
 export function analyse(rows) {
@@ -199,7 +200,7 @@ export async function build(rows, progress = () => {}) {
     const r = e.r; const amt = Math.abs(r.amount); const d = rowDate(r).toISOString(); const id = 'bingx:' + rowKey(r);
     switch (e.k) {
       case 'withdraw':
-        push({ type: 'transfer', asset: r.asset, amount: amt, chf: 0, date: d, to: wallet, extId: id, note: `Auszahlung an ${short(addr(r.remark))}` });
+        push({ type: 'transfer', asset: r.asset, amount: amt, chf: 0, date: d, to: wallet, extId: id, txid: txidOf(r.remark), address: addr(r.remark), note: `Auszahlung an ${short(addr(r.remark))}` });
         stats.withdrawals++; break;
       case 'deposit':
         if (STABLE.has(r.asset)) {
@@ -207,7 +208,7 @@ export async function build(rows, progress = () => {}) {
           push({ type: 'buy', asset: r.asset, amount: amt, chf: x != null ? +(amt * x).toFixed(2) : null, date: d, extId: id, note: 'Einzahlung Stablecoin (bewertet zum Tageskurs)' });
           if (x == null) missingChf++;
         } else {
-          push({ type: 'review', dir: 'in', asset: r.asset, amount: amt, chf: null, date: d, extId: id, raw: `Einzahlung ${fmt(amt)} ${r.asset} von ${short(addr(r.remark))}`,
+          push({ type: 'review', dir: 'in', txid: txidOf(r.remark), asset: r.asset, amount: amt, chf: null, date: d, extId: id, raw: `Einzahlung ${fmt(amt)} ${r.asset} von ${short(addr(r.remark))}`,
             note: 'Eigener Transfer (Kauf schon anderswo erfasst) oder Anfangsbestand?' });
           stats.review++;
         }

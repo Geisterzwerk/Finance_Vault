@@ -143,7 +143,9 @@ export function openScanner() {
     const draft = {
       kind: cls.kind, issuer: (qr && qr.creditor) || f.issuer || '', title: cls.title || '', number: f.number || '',
       amount: qr && qr.amount != null ? qr.amount : f.amount ?? '', due: f.due || '', date: f.date || isoDay(new Date()),
-      category: cls.category, tax: cls.tax, ziffer: cls.ziffer, taxKind: cls.taxKind || '', taxYear: SC.guessTaxYear(text) || year - 1,
+      category: cls.category, tax: cls.tax, ziffer: cls.ziffer, taxKind: cls.taxKind || '', taxStage: cls.taxStage || '',
+      // Ohne Jahr im Text: provisorische Staats-/Gemeinderechnung gilt fürs laufende Jahr, Bundessteuer fürs Vorjahr
+      taxYear: SC.guessTaxYear(text) || (cls.taxStage === 'provisorisch' && cls.taxKind !== 'Bund' ? year : year - 1),
       year: SC.guessTaxYear(text) || new Date(f.date || Date.now()).getFullYear(), iban: qr ? qr.iban : '', reference: qr ? qr.reference : '',
       text: text.slice(0, 6000), qr: !!qr,
     };

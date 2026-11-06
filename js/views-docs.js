@@ -3,11 +3,12 @@
 // Jahresabschluss, Steuerzahlungen, Archiv und Prüfung
 // =====================================================================
 import { S, commit, uid } from './store.js';
-import { holdings, yearEndHoldings, reviewCount } from './calc.js';
+import { yearEndHoldings, reviewCount } from './calc.js';
 import { putFile, getFileURL, getFileBytes, deleteFile } from './vault.js';
 import * as LG from './ledger.js';
 import * as TP from './taxpack.js';
-import * as BX from './bingx.js';
+import { reconcile, autoResolve } from './auto.js';
+import * as SRV from './server.js';
 import { esc, chf, qty, dmy, ago, bar, icon, openSheet, closeSheet, closeAll, toast, download, chips, chipVal } from './ui.js';
 import { openScanner } from './scanui.js';
 
@@ -58,7 +59,7 @@ export function openResult(d, inboxDoc = null) {
       if (d.kind === 'invoice') {
         if (!d.issuer.trim() || amount == null) return toast('Aussteller und Betrag angeben');
         s.invoices.push({ id: uid(), created: new Date().toISOString(), issuer: d.issuer.trim(), title: d.title, number: d.number, amount, due: d.due, status: 'open', paidAt: '',
-          category: d.category, tax: d.tax, ziffer: d.ziffer, taxKind: d.category === 'Steuern' ? d.taxKind || 'Staat BL' : '', taxYear: d.category === 'Steuern' ? +d.taxYear || null : null,
+          category: d.category, tax: d.tax, ziffer: d.ziffer, taxKind: d.category === 'Steuern' ? d.taxKind || 'Staat BL' : '', taxYear: d.category === 'Steuern' ? +d.taxYear || null : null, taxStage: d.category === 'Steuern' ? d.taxStage || '' : '',
           file: d.file, fileName: d.fileName, iban: d.iban, reference: d.reference, note: '' });
         toast('Als offene Rechnung gespeichert');
       } else {
@@ -145,24 +146,18 @@ function openDoc(d) {
 // =====================================================================
 export function ledgerPage() {
   const s = S(); const L = s.ledger; const last = L.last;
-  const app = holdings();
-  let bx = {}; try { if (s.raw.bingx && s.raw.bingx.length) bx = BX.analyse(s.raw.bingx).balances; } catch (e) { bx = {}; }
-  const syms = [...new Set([...Object.keys(last ? last.total : {}), ...Object.keys(app).filter((k) => app[k].qty > 1e-8)])].sort();
-  const rows = last ? syms.map((k) => {
-    const lq = last.total[k] || 0, bq = Math.max(0, bx[k] || 0), aq = app[k] ? app[k].qty : 0;
-    const diff = aq - lq - bq; const rel = Math.abs(diff) / Math.max(aq, lq + bq, 1e-12);
-    return { k, lq, bq, aq, diff, st: rel < 0.005 || Math.abs(diff) < 1e-6 ? 'ok' : 'warn', tracked: k in last.total };
-  }) : [];
+  const rc = reconcile(); const rows = rc.rows.map((r) => ({ ...r, st: r.ok ? 'ok' : 'warn' }));
+  const viaServer = SRV.isConfigured() && s.settings.ledgerViaServer !== false;
   return {
-    title: 'Ledger', sub: 'Abgleich über öffentliche Adressen · nur lesen',
-    html: `<div class="note">Nur <b>öffentliche Adressen</b> eintragen. Niemals die 24 Wörter, PIN oder Private Keys.</div>
+    title: 'Ledger', sub: viaServer ? 'Automatischer Abgleich über deinen Server' : 'Abgleich über öffentliche Adressen · nur lesen',
+    html: `<div class="note">Nur <b>öffentliche Adressen</b> eintragen (Empfangen-Adresse in Ledger Live). Niemals die 24 Wörter, PIN oder Private Keys.${viaServer ? ' Der Server prüft die Adressen alle paar Stunden und meldet Änderungen per Push.' : ''}</div>
       ${L.addresses.map((a) => `<div class="card row"><div class="grow"><b>${esc(LG.CHAINS[a.chain].label)}</b><div class="small mut">${esc(a.label || '')} ${esc(a.address.slice(0, 10))}…${esc(a.address.slice(-6))}</div></div><button class="btn danger sm" data-del="${a.id}">✕</button></div>`).join('')}
       <button class="btn line block" data-act="add">＋ Adresse hinzufügen</button>
       ${L.addresses.length ? `<button class="btn gold block big" data-act="sync">↻ Bestände abfragen</button>` : ''}
-      ${last ? `<div class="lbl mt">Abgleich · ${dmy(last.at)} ${ago(last.at)}</div>
+      ${last ? `<div class="lbl mt">Abgleich · ${dmy(last.at)} ${ago(last.at)}${last.src === 'server' ? ' · Server' : ''}${rc.bxSrc ? ` · BingX aus ${rc.bxSrc === 'api' ? 'API (aktuell)' : 'Kontoauszug'}` : ''}</div>
         <div class="card"><div class="ttable lt"><div class="th"><span>Coin</span><span>Ledger</span><span>BingX</span><span>App</span></div>
         ${rows.map((r) => `<div class="tr"><b>${esc(r.k)}</b><span>${r.tracked ? qty(r.lq) : '–'}</span><span>${r.bq ? qty(r.bq) : '–'}</span><b>${qty(r.aq)}</b>
-          <small class="${!r.tracked ? 'mut' : r.st === 'ok' ? 'pos' : 'amber'}">${!r.tracked ? 'keine Adresse hinterlegt' : r.st === 'ok' ? 'stimmt überein' : `Differenz ${r.diff > 0 ? '+' : ''}${qty(r.diff)} (App ${r.diff > 0 ? 'zu hoch' : 'zu tief'})`}</small>
+          <small class="${!r.tracked ? 'mut' : r.st === 'ok' ? 'pos' : 'amber'}">${!r.tracked ? 'weder Ledger-Adresse noch BingX-Saldo' : r.st === 'ok' ? 'stimmt überein' : `Differenz ${r.diff > 0 ? '+' : ''}${qty(r.diff)} (App ${r.diff > 0 ? 'zu hoch' : 'zu tief'})`}</small>
           ${r.tracked && r.st !== 'ok' ? `<button class="btn line sm fixbtn" data-fix="${esc(r.k)}" data-diff="${r.diff}">Ausgleich buchen</button>` : ''}</div>`).join('')}</div></div>
         ${last.errors && last.errors.length ? `<div class="card small amber">${last.errors.map((e) => `${esc(LG.CHAINS[e.chain].label)}: ${esc(e.error)}`).join('<br>')}</div>` : ''}
         <div class="small mut">«App» = Bestand aus deinen Transaktionen. Erwartet: App = Ledger + Rest auf BingX. Eine Differenz heisst meist: Kauf, Verkauf oder Gebühr fehlt.</div>` : ''}`,
@@ -183,6 +178,12 @@ export function ledgerPage() {
       if (b.dataset.act === 'sync') {
         if (!navigator.onLine) return toast('Offline');
         b.disabled = true;
+        if (SRV.isConfigured() && s2.settings.ledgerViaServer !== false) {
+          b.textContent = 'Server prüft Adressen …';
+          try { await SRV.syncAll({ quiet: false, force: true }); await SRV.refreshLedger(); await new Promise((r) => setTimeout(r, 6000)); await SRV.syncAll({ quiet: false }); toast('Abgleich aktualisiert'); }
+          catch (err) { toast(err.message, 4000); b.disabled = false; b.textContent = '↻ Bestände abfragen'; }
+          return;
+        }
         const r = await LG.syncAll(s2.ledger.addresses, (i, n) => { b.textContent = `Abfrage ${i}/${n} …`; });
         s2.ledger.last = r; commit(); toast(r.errors.length ? `${r.errors.length} Abfrage(n) fehlgeschlagen` : 'Bestände aktualisiert');
       }
@@ -205,7 +206,10 @@ function openAddress() {
         const a = el.querySelector('[name=addr]').value.trim();
         if (a.length < 20 || /\s\S+\s\S+\s\S+\s/.test(a) && !a.includes(',')) return toast('Das sieht nicht wie eine Adresse aus');
         S().ledger.addresses.push({ id: uid(), chain: sel.value, address: a, label: el.querySelector('[name=label]').value.trim() });
+        S().transactions.forEach((t) => { if (t.type === 'review') delete t.autoChecked; }); // mit neuer Adresse nochmals prüfen
         commit(); closeSheet();
+        autoResolve().then((n) => { if (n) { commit(); toast(`${n} Einzahlung${n > 1 ? 'en' : ''} automatisch als eigener Transfer erkannt`, 4000); } });
+        if (SRV.isConfigured()) SRV.syncAll({ force: true });
       });
     },
   });

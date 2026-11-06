@@ -3,7 +3,8 @@
 // Erinnerungen (Kalender) und Prüfung der eingereichten Steuererklärung.
 // =====================================================================
 import { S } from './store.js';
-import { yearEndHoldings } from './calc.js';
+import { yearEndHoldings, accountAt } from './calc.js';
+import { reminderDates, calendar } from './taxcal.js';
 import { getFileBytes } from './vault.js';
 import * as LIB from './libs.js';
 
@@ -79,7 +80,8 @@ export function remindersICS() {
   add(`yearend2-${y}`, `${y + 1}-01-02`, 'Finance Vault: Jahresabschluss erledigt? Daten aktualisieren', 'PT9H');
   add(`taxdocs-${y + 1}`, `${y + 1}-01-20`, 'Finance Vault: Steuerdokumente erwartet (Lohnausweis, 3a, Bank)', 'PT9H');
   add('monthly', `${y}-${p2(now.getMonth() + 1)}-01`, 'Finance Vault: Monats-Update (BingX, Relai, Kontostände)', 'PT9H', 'FREQ=MONTHLY;BYMONTHDAY=1');
-  for (const i of s.invoices) if (i.status === 'open' && i.due) {
+  for (const r of reminderDates()) add(r.id, r.day, 'Finance Vault: ' + r.body, 'PT9H');
+  for (const i of s.invoices) if (i.status === 'open' && i.due && i.category !== 'Steuern') {
     add(`inv-${i.id}`, i.due, 'Finance Vault: Rechnung fällig', '-P2D');
   }
   return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Finance Vault//DE', 'CALSCALE:GREGORIAN', ...ev, 'END:VCALENDAR'].join('\r\n');
@@ -113,6 +115,9 @@ export function zip(files) {
 }
 
 const fileBytes = (id) => getFileBytes(id);
+const KINDS = { bank: 'Bank', cash: 'Bargeld', securities: 'Wertschriften', pillar3a: 'Säule 3a', liability: 'Schuld' };
+const CHECK_LABELS = [['lohn', 'Lohnausweis'], ['weg', 'Arbeitsweg'], ['verpfl', 'Auswärtige Verpflegung'], ['beruf', 'Übrige Berufskosten'], ['3a', 'Säule 3a Bescheinigung'],
+  ['bildung', 'Aus- und Weiterbildung'], ['krank', 'Krankheitskosten'], ['spenden', 'Spenden'], ['bank', 'Bank-Steuerauszüge'], ['crypto', 'Crypto-Steuerbericht']];
 
 // ---------- Steuerpaket ----------
 export async function buildPackage(y) {
@@ -156,13 +161,15 @@ ${docs.filter((d) => d.ziffer).map((d) => `<tr><td>${esc(d.ziffer)}</td><td>${es
 <h2>Kryptowährungen per 31.12.${y}</h2><table><tr><th>Asset</th><th class="r">Bestand</th><th class="r">Steuerkurs</th><th class="r">Steuerwert</th><th>Quelle</th></tr>
 ${hold.map((h) => { const r = rates[h.asset]; return `<tr><td>${esc(h.asset)}</td><td class="r">${h.qty}</td><td class="r">${r ? r.chf : '–'}</td><td class="r">${r ? chf(h.qty * r.chf) : 'fehlt'}</td><td>${r ? esc(r.source) : ''}</td></tr>`; }).join('')}
 <tr><td><b>Total</b></td><td></td><td></td><td class="r"><b>${chf(total)}</b></td><td></td></tr></table>
-<h2>Konten (letzter Stand)</h2><table><tr><th>Konto</th><th>Art</th><th class="r">Stand</th><th>Datum</th></tr>
-${s.accounts.map((a) => `<tr><td>${esc(a.name)}</td><td>${esc(a.kind)}</td><td class="r">${chf(a.value)}</td><td>${String(a.updated).slice(0, 10)}</td></tr>`).join('')}</table>
-<p class="mut">Für die Steuer gilt der Stand per 31.12. laut Bank-Steuerauszug, nicht dieser App-Stand.</p>
+<h2>Konten per 31.12.${y}</h2><table><tr><th>Konto</th><th>Art</th><th class="r">Stand 31.12.</th><th>Grundlage</th></tr>
+${s.accounts.map((a) => { const v = accountAt(a, new Date(y, 11, 31, 23, 59).getTime()); return `<tr><td>${esc(a.name)}</td><td>${esc(KINDS[a.kind] || a.kind)}</td><td class="r">${v == null ? '–' : chf(v)}</td><td class="mut">${v == null ? 'kein Stand vor 31.12.' : 'letzter erfasster Stand'}</td></tr>`; }).join('')}</table>
+<p class="mut">Massgebend ist der Stand per 31.12. laut Bank-/Vorsorge-Steuerauszug. Die App zeigt den letzten von dir erfassten Stand bis zu diesem Datum.</p>
 <h2>Steuerzahlungen ${y}</h2><table><tr><th>Steuer</th><th class="r">Soll</th><th class="r">Bezahlt</th><th class="r">Offen</th></tr>
 ${Object.entries(pay.by).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="r">${chf(v.soll)}</td><td class="r">${chf(v.paid)}</td><td class="r">${chf(v.soll - v.paid)}</td></tr>`).join('')}
 <tr><td><b>Total</b></td><td class="r"><b>${chf(pay.soll)}</b></td><td class="r"><b>${chf(pay.paid)}</b></td><td class="r"><b>${chf(pay.open)}</b></td></tr></table>
-<h2>Checkliste</h2><ul>${Object.entries(t.checklist || {}).map(([k, v]) => `<li>${v ? '✓' : '○'} ${esc(k)}</li>`).join('')}</ul>
+<h2>Fristen</h2><table><tr><th>Was</th><th>Bis</th><th class="r">Offen</th><th>Status</th></tr>
+${calendar().map((x) => `<tr><td>${esc(x.title)}</td><td>${x.due.split('-').reverse().join('.')}</td><td class="r">${x.type === 'pay' ? chf(x.invoices.length ? x.open : x.estimate) : ''}</td><td>${x.done ? 'erledigt' : x.days < 0 ? 'überfällig' : 'offen'}</td></tr>`).join('')}</table>
+<h2>Checkliste</h2><ul>${CHECK_LABELS.map(([k, l]) => `<li>${(t.checklist || {})[k] ? '✓' : '○'} ${esc(l)}</li>`).join('')}</ul>
 <p class="mut">Ziffern aus der Steuererklärung 2023 (E-Tax BL), jährlich prüfen. Organisationshilfe, keine Steuerberatung.</p>`;
   files.unshift({ name: `01_Uebersicht_Steuern_${y}.html`, data: html });
   return { blob: zip(files), count: files.length };

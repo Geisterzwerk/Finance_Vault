@@ -7,7 +7,10 @@
 // Ohne Verbindung läuft die App normal weiter (letzter Stand).
 // =====================================================================
 import { S, commit, uid } from './store.js';
-import { historicalCHF } from './prices.js';
+import { historicalCHF, coinId } from './prices.js';
+import { holdings, hiddenAssets } from './calc.js';
+import { applyFunding, autoResolve, updateSecurities } from './auto.js';
+import { reminderDates as taxReminders } from './taxcal.js';
 
 const cfg = () => (S().server ||= { url: '', token: '', lastSync: null, lastReminders: '', push: false, status: null });
 export const isConfigured = () => !!(cfg().url && cfg().token);
@@ -85,10 +88,13 @@ export function buildReminders() {
     const d = new Date(y, now.getMonth() + i, 1, 18);
     add(`mon-${d.getFullYear()}-${d.getMonth() + 1}`, d.getTime(), 'Monats-Update', 'BingX/Relai importieren und Kontostände aktualisieren.', './#/vault');
   }
+  // Steuerfristen (Erklärung, Bund, Staat, Gemeinde) – 14 und 3 Tage vorher, am Tag selbst
+  for (const r of taxReminders()) add(r.id, r.at, r.title, r.body, './#/steuern');
   for (const inv of s.invoices) {
     if (inv.status !== 'open' || !inv.due) continue;
+    if (inv.category === 'Steuern') continue; // kommen über den Steuerkalender
     const [Y, M, D] = inv.due.split('-').map(Number);
-    const tax = inv.category === 'Steuern';
+    const tax = false;
     for (const [k, off, txt] of [['7', -7, 'in 7 Tagen'], ['2', -2, 'in 2 Tagen'], ['0', 0, 'heute']]) {
       add(`inv-${inv.id}-${k}`, at(Y, M - 1, D + off, 9), tax ? 'Steuerzahlung fällig' : 'Rechnung fällig', `Eine ${tax ? 'Steuerrechnung' : 'Rechnung'} ist ${txt} fällig.`, './#/rechnungen');
     }
@@ -105,20 +111,18 @@ export async function syncReminders(force = false) {
 
 // ---------- BingX-Trades übernehmen ----------
 // Nur Trades NACH dem Ende des letzten Kontoauszugs, damit nichts doppelt zählt.
-export async function syncBingx() {
-  const s = S(); const c = cfg();
-  const im = s.imports.BingX;
-  const cutoff = im ? (im.toMs || (im.to ? new Date(String(im.to).replace(' ', 'T')).getTime() : 0)) : 0;
-  const r = await api('/api/bingx/trades?since=' + cutoff, { timeout: 15000 });
+const statementCutoff = () => { const im = S().imports.BingX; return im ? (im.toMs || (im.to ? new Date(String(im.to).replace(' ', 'T')).getTime() : 0)) : 0; };
+async function applyTrades(trades) {
+  const s = S(); const cutoff = statementCutoff();
   const have = new Set(s.transactions.map((t) => t.extId));
-  const deleted = s.deletedExt || {};
+  const deleted = s.deletedExt || {}; const hidden = hiddenAssets();
   const sym = (x) => /^[A-Z0-9]{1,20}$/.test(String(x || ''));
   const pos = (x) => Number.isFinite(+x) && +x >= 0;
   let added = 0;
-  for (const t of Array.isArray(r.trades) ? r.trades : []) {
+  for (const t of Array.isArray(trades) ? trades : []) {
     // Server-Daten nie blind vertrauen
     if (!t || !sym(t.base) || !sym(t.quote) || !pos(t.qty) || !pos(t.quoteQty) || !pos(t.fee) || !Number.isFinite(+t.time)) continue;
-    const id = 'bingxapi:' + t.id; if (have.has(id) || deleted[id] || t.time <= cutoff) continue;
+    const id = 'bingxapi:' + t.id; if (have.has(id) || deleted[id] || t.time <= cutoff || hidden.has(t.base)) continue;
     const date = new Date(t.time).toISOString();
     const rate = await historicalCHF(t.quote, date);
     const chf = rate != null && t.quoteQty ? +(t.quoteQty * rate).toFixed(2) : null;
@@ -130,26 +134,102 @@ export async function syncBingx() {
     );
     added++;
   }
+  return added;
+}
+// Älterer Server (v1) – nur Trades
+export async function syncBingx() {
+  const c = cfg();
+  const r = await api('/api/bingx/trades?since=' + statementCutoff(), { timeout: 15000 });
+  const added = await applyTrades(r.trades);
   c.bingxLast = r.lastSync; c.bingxError = r.lastError;
   commit(!added);
   return { added, error: r.lastError };
 }
 
-// ---------- Alles abgleichen (beim Öffnen) ----------
+// ---------- Beobachtungsliste an den Server ----------
+// Nur: Coin-Kürzel + Kurs-Id, Aktien-Ticker, öffentliche Adressen. Keine Mengen, keine Werte.
+export function buildWatch() {
+  const s = S(); const hidden = hiddenAssets(); const coins = {};
+  const syms = new Set([...Object.keys(holdings()), ...s.goals.filter((g) => g.kind === 'asset' && g.asset).map((g) => g.asset)]);
+  for (const sym of syms) if (!hidden.has(sym) && /^[A-Z0-9]{1,20}$/.test(sym) && !['CHF', 'USD', 'EUR'].includes(sym)) coins[sym] = coinId(sym) || '';
+  const tickers = [...new Set(s.accounts.flatMap((a) => (a.positions || []).map((p) => p.ticker)).filter(Boolean))];
+  const addresses = s.settings.ledgerViaServer === false ? [] : (s.ledger.addresses || []).map((a) => ({ chain: a.chain, address: a.address }));
+  return { coins, tickers, addresses };
+}
+async function pushWatch(force = false) {
+  const w = buildWatch(); const sig = JSON.stringify(w);
+  if (!force && sig === cfg().watchSig) return false;
+  await api('/api/watch', { method: 'PUT', body: w });
+  cfg().watchSig = sig; return true;
+}
+
+// ---------- Alles vom Server holen ----------
+const DAYMS = 864e5;
+async function pullSync() {
+  const s = S(); const c = cfg();
+  const q = `/api/sync?since=${c.syncSince || 0}&histFrom=${encodeURIComponent(c.histFrom || '')}`;
+  const r = await api(q, { timeout: 20000 });
+  const res = { prices: 0, trades: 0, funding: 0, auto: 0, ledger: false };
+  const mk = r.market || {};
+  // Namen/Ids neu gefundener Coins (automatisch – bis zur Bestätigung nicht für Meilensteine)
+  for (const [sym, n] of Object.entries(mk.names || {})) if (n && n.id && !coinId(sym)) s.coins[sym] = { ...(s.coins[sym] || {}), id: n.id, name: n.name, auto: true };
+  for (const [sym, p] of Object.entries(mk.coins || {})) {
+    if (!p || !(p.chf > 0)) continue;
+    s.prices[sym] = { chf: p.chf, change24h: p.ch24 ?? null, at: new Date(p.at).toISOString(), src: 'server' }; res.prices++;
+  }
+  s.stockPrices = s.stockPrices || {};
+  for (const [t, p] of Object.entries(mk.stocks || {})) if (p && p.chf > 0) s.stockPrices[t] = { chf: p.chf, price: p.price, currency: p.currency, name: p.name, change24h: p.ch24 ?? null, at: new Date(p.at).toISOString() };
+  if (res.prices) s.pricesAt = new Date(mk.at || Date.now()).toISOString();
+  // Kursverläufe in den Zwischenspeicher (Tag -> Mittag UTC)
+  const H = r.history || {};
+  for (const [sym, days] of Object.entries(H.coins || {})) {
+    const id = coinId(sym); if (!id) continue;
+    const cur = new Map(((s.histCache[id] || {}).p || []).map(([ms, v]) => [new Date(ms).toISOString().slice(0, 10), [ms, v]]));
+    for (const [d, v] of Object.entries(days)) if (v > 0) cur.set(d, [Date.parse(d + 'T12:00:00Z'), v]);
+    s.histCache[id] = { at: Date.now(), p: [...cur.values()].sort((x, y) => x[0] - y[0]), src: 'server' };
+  }
+  s.stockHist = s.stockHist || {};
+  for (const [t, days] of Object.entries(H.stocks || {})) s.stockHist[t] = { ...(s.stockHist[t] || {}), ...days };
+  // Ledger
+  const L = r.ledger || {};
+  if (L.at) { s.ledger.last = { total: L.total || {}, errors: (L.errors || []).map((e) => ({ chain: e.chain, address: e.address, error: e.error })), at: new Date(L.at).toISOString(), src: 'server' }; res.ledger = true; }
+  // BingX
+  const bx = r.bingx || {};
+  if (bx.configured) {
+    res.trades = await applyTrades(bx.trades);
+    const f = await applyFunding({ deposits: bx.deposits || [], withdrawals: bx.withdrawals || [] }, statementCutoff());
+    res.funding = f.added; res.auto = f.auto;
+    if (bx.balances && bx.balances.assets) s.server.bxBalances = { at: bx.balances.at, assets: bx.balances.assets };
+    c.bingxLast = bx.lastSync; c.bingxError = bx.lastError;
+  } else res.auto = await autoResolve();
+  updateSecurities();
+  c.syncSince = r.time; c.histFrom = new Date(r.time - DAYMS).toISOString().slice(0, 10);
+  c.market = { at: mk.at, error: mk.error }; c.version = r.version;
+  return res;
+}
+
+// ---------- Alles abgleichen (beim Öffnen, regelmässig, auf Knopfdruck) ----------
 let running = false;
-export async function syncAll({ quiet = true } = {}) {
+export async function syncAll({ quiet = true, force = false } = {}) {
   if (!isConfigured() || running || !navigator.onLine) return null;
   running = true; const c = cfg();
   try {
     const rem = await syncReminders();
-    const bx = c.bingx === false ? { added: 0 } : await syncBingx().catch((e) => ({ added: 0, error: e.message }));
-    c.lastSync = new Date().toISOString(); c.status = { ok: true, msg: bx.error ? 'BingX: ' + bx.error : 'verbunden' };
-    commit(true);
-    return { rem, bx };
+    let out;
+    try { await pushWatch(force); out = await pullSync(); }
+    catch (e) {
+      if (!/unbekannt|404/.test(e.message)) throw e;
+      out = { legacy: true, ...(await syncBingx()) }; // Server noch v1
+    }
+    c.lastSync = new Date().toISOString();
+    c.status = { ok: true, msg: c.bingxError ? 'BingX: ' + c.bingxError : c.market && c.market.error ? 'Kurse: ' + c.market.error : 'verbunden' };
+    commit();
+    return { rem, ...out };
   } catch (e) {
     c.status = { ok: false, msg: e.message }; commit(true);
     if (!quiet) throw e;
     return null;
   } finally { running = false; }
 }
+export const refreshLedger = () => api('/api/ledger/refresh', { method: 'POST', body: {} });
 export const triggerBingx = () => api('/api/bingx/sync', { method: 'POST', body: {}, timeout: 120000 });

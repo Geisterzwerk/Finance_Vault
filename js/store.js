@@ -21,7 +21,9 @@ export const emptyState = () => ({
   prices: {},         // Symbol -> { chf, change24h, at }
   pricesAt: null,
   histCache: {},      // CoinGecko-Id -> { at, p: [[ms, chf], ...] } (Tageskurse, Zwischenspeicher)
-  taxYears: {},       // Jahr -> { rates, checklist, closed, snapshot }
+  taxYears: {},       // Jahr -> { rates, checklist, closed, snapshot, filed }
+  // Steuerkalender BL: Gemeinde mit eigenem Bezug? Fälligkeit (MM-TT), Zinssätze (jährlich prüfen), Rücklagekonto
+  taxSettings: { gemeindeSeparate: false, gemeindeDue: '09-30', vzStaat: 0.1, vzBund: 0, verzugStaat: 5, verzugBund: 4, ratesYear: 2026, reserveAccountId: '' },
   // ignoredAssets: ausgeblendete Coins (Demo, Scam, Staub) – zählen nirgends mit. VST = BingX-Demo-Guthaben.
   settings: { name: 'Jorick', cgKey: '', defaultWallet: 'Ledger', autoLockMin: 5, canton: 'Basel-Landschaft', ignoredAssets: ['VST'] },
 });
@@ -33,7 +35,7 @@ let timer = null;
 export const S = () => state;
 export function setState(s) {
   const e = emptyState();
-  state = { ...e, ...s, settings: { ...e.settings, ...(s.settings || {}) } };
+  state = { ...e, ...s, settings: { ...e.settings, ...(s.settings || {}) }, taxSettings: { ...e.taxSettings, ...(s.taxSettings || {}) } };
 }
 // Beim Sperren: entschlüsselte Daten aus dem Arbeitsspeicher entfernen
 export function clearState() { clearTimeout(timer); state = emptyState(); }

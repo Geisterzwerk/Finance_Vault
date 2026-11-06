@@ -1,33 +1,38 @@
-# Update auf v2.3.0
+# Update auf v2.6.0 – alles automatisch
 
-## 1. Hochladen
-
+## 1. App hochladen
 ```bash
 git add -A
-git commit -m "Finance Vault v2.3.0: Fixes, Sicherheit"
+git commit -m "Finance Vault v2.6.0"
 git push
 ```
+App auf dem iPhone öffnen → oben «Neue Version verfügbar» antippen (oder App ganz schliessen und neu öffnen).
 
-## 2. Auf dem iPhone
+## 2. Server aktualisieren (Ubuntu-Server oder Laptop)
+Ordner `finance-vault-server` durch die neue Version ersetzen – **`.env` und `data/` behalten**. Dann:
 
-1. App öffnen. Sie lädt die neue Version (ggf. einmal ganz schliessen und neu öffnen, oder oben «Neue Version verfügbar» antippen).
-2. Entsperren. Der Vault wird dabei automatisch auf die stärkere Verschlüsselung (600'000 Iterationen) umgestellt – dauert ein bis zwei Sekunden.
-3. **Neues Backup** erstellen: Vault › Einstellungen › Backup exportieren – jetzt mit Backup-Passwort (mind. 10 Zeichen, z. B. vier Wörter). Datei in «Dateien» sichern, Passwort getrennt notieren. Alte Backups sind nur PIN-geschützt → löschen.
+```bash
+cd finance-vault-server
+```
 
-### Nur falls der Spalt unter der Tab-Leiste bleibt
+```bash
+sudo chown -R 10001:10001 data
+```
 
-Die neue Statusleisten-Einstellung liest iOS **nur beim Hinzufügen zum Home-Bildschirm**. Achtung: Eine Home-Bildschirm-App hat auf dem iPhone ihren **eigenen Speicher** – beim Entfernen des Icons werden ihre Daten gelöscht.
+```bash
+docker compose up -d --build
+```
 
-1. Backup aus Schritt 3 muss vorhanden sein (und Backup-Passwort + PIN bekannt).
-2. Icon entfernen › in Safari `https://geisterzwerk.github.io/Finance_Vault/` öffnen › Teilen › Zum Home-Bildschirm.
-3. App öffnen › auf dem Willkommen-Bildschirm **«Backup wiederherstellen»** › Backup-Datei wählen › Passwort und PIN eingeben.
+Optional in `.env` ergänzen (siehe `.env.example`): `COINGECKO_API_KEY=...` (kostenloser Demo-Schlüssel, schnellerer Start).
 
-## 3. Künftige Updates
+## 3. In der App (einmalig)
+1. **Server koppeln** (falls noch nicht): Vault › Einstellungen › Eigener Server. Kopplungscode: `docker compose exec finance-vault python server.py pair`
+2. **Mitteilungen aktivieren** (gleiche Stelle).
+3. **Ledger-Adressen** sind schon eingetragen – die App gibt sie automatisch an den Server weiter.
+4. **Wertschriften mit Ticker** (optional): Invest › Konten › Depot öffnen › Positionen, z. B. `VWRL.SW 12`.
 
-- Nach `git push` erkennt die App neue Versionen selbst, sobald du sie wieder öffnest: oben erscheint «Neue Version verfügbar – tippen zum Neuladen».
-- In `sw.js` die `VERSION` und in `js/version.js` die `APP_VERSION` erhöhen (für einen sauberen Offline-Cache). Updates kommen aber auch an, wenn du es vergisst.
+Ab dann: App öffnen genügt. Die Karte **Automatik** auf der Übersicht zeigt, ob Kurse, BingX und Ledger aktuell sind und ob der Abgleich stimmt.
 
-## 4. Server
-
-Siehe `finance-vault-server/README.md`. Neu: Dockerfile mit Härtung, `server.py pair|status|revoke-all`, Host-Prüfung.
-Nach dem Update auf Linux einmal `sudo chown -R 10001:10001 data` ausführen (Container läuft nicht mehr als root).
+## 4. Was weiterhin von Hand bleibt
+- Bank- und VIAC-Kontostände (keine offene Schnittstelle) – monatliche Erinnerung.
+- Fälle, die nicht eindeutig sind (z. B. Auszahlung an eine fremde Adresse) – unter «Bitte zuordnen», meist mit einem Tipp erledigt.

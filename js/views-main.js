@@ -7,6 +7,8 @@ import { coinId } from './prices.js';
 import { closingDue } from './taxpack.js';
 import { openEstimate, missingOpenings } from './estimate.js';
 import { ring, legend, area, progress, lastId, SLOTS, OTHER, gc } from './charts.js';
+import { reconcile } from './auto.js';
+import { calendar as taxCalendar } from './taxcal.js';
 import { loadHistory } from './prices.js';
 import {
   esc, chf, qty, price, pct, cls, dmy, dmyShort, hm, ago, daysUntil, greeting, longDate, icon,
@@ -73,6 +75,21 @@ function bindTrend(el) {
   });
 }
 
+// Status der Automatik: woher kommen die Daten, wie frisch sind sie, stimmt der Abgleich?
+function autoCard() {
+  const s = S(); const c = s.server || {};
+  if (!c.token && !(s.ledger.addresses || []).length) return '';
+  const rc = reconcile();
+  const fresh = (iso, h) => iso && Date.now() - new Date(iso) < h * 36e5;
+  const item = (ok, label, detail) => `<div class="txr">${ok ? icon('ok') : icon('warn')}<span class="grow">${label}</span><span class="small mut">${detail}</span></div>`;
+  return `<div class="card clickable" data-go="#/vault/ledger"><div class="row"><div class="lbl grow">Automatik</div><span class="chev">›</span></div>
+    ${c.token ? item(c.status && c.status.ok, 'Server', c.lastSync ? 'Abgleich ' + ago(c.lastSync) : 'noch nie') : ''}
+    ${item(fresh(s.pricesAt, 1), 'Kurse', s.pricesAt ? hm(s.pricesAt) + ' · ' + dmyShort(s.pricesAt) : 'fehlen')}
+    ${c.token && c.bingx ? item(fresh(c.bingxLast && new Date(c.bingxLast).toISOString(), 12), 'BingX', c.bingxLast ? 'Server-Sync ' + ago(new Date(c.bingxLast)) : 'wartet') : ''}
+    ${rc.ready ? item(!rc.bad.length, 'Abgleich Ledger + BingX', rc.bad.length ? `${rc.bad.length} Abweichung${rc.bad.length > 1 ? 'en' : ''}: ${esc(rc.bad.slice(0, 3).map((r) => r.k).join(', '))}` : 'alles stimmt') : (s.ledger.addresses || []).length ? item(false, 'Abgleich Ledger', 'noch nicht geprüft') : ''}
+  </div>`;
+}
+
 export function dashboard() {
   gc();
   const s = S(); const nw = netWorth(); const rc = reviewCount();
@@ -105,12 +122,17 @@ export function dashboard() {
       ${legend(segs, Math.max(1, segs.reduce((a, x) => a + x.value, 0)), (v) => chf(v), lastId())}
       ${nw.liability ? `<div class="small mut mt">Verbindlichkeiten ${chf(-nw.liability)} sind im Nettovermögen abgezogen.</div>` : ''}
     </div>
+    ${autoCard()}
     ${trendCard('net', 'Verlauf Nettovermögen')}
     ${goalCard(g1)}
     <div class="grid2">
       <div class="card clickable" data-go="#/rechnungen"><div class="lbl">Rechnungen</div><div class="big2">${chf(inv.sum)}</div>
         <div class="small ${inv.over ? 'neg' : inv.open.length ? 'amber' : 'pos'}">${inv.open.length ? `${inv.open.length} offen${inv.over ? ' · ' + inv.over + ' überfällig' : ''}` : 'Alles bezahlt'}</div></div>
-      <div class="card clickable row" data-go="#/steuern">${progress(taxDone / TAX_TOTAL, SLOTS[2], 46)}<div class="grow"><div class="lbl nowrap">Steuern</div><div class="big1">${yr}</div><div class="small mut">${taxDone} von ${TAX_TOTAL}</div></div></div>
+      ${(() => { const nx = taxCalendar().find((x) => !x.done); return nx ? `<div class="card clickable" data-go="#/steuern"><div class="lbl nowrap">Steuerfrist</div><div class="big1">${esc(nx.type === 'file' ? 'Erklärung ' + nx.year : nx.title)}</div>
+        <div class="small ${nx.days < 0 ? 'neg' : nx.days <= 21 ? 'amber' : 'mut'}">${nx.days < 0 ? 'überfällig' : nx.days === 0 ? 'heute' : 'in ' + nx.days + ' Tagen'} · ${nx.due.split('-').reverse().join('.')}</div></div>` : ''; })()}
+    </div>
+    <div>
+      <div class="card clickable row" data-go="#/steuern">${progress(taxDone / TAX_TOTAL, SLOTS[2], 46)}<div class="grow"><div class="lbl nowrap">Checkliste Steuererklärung</div><div class="big1">${yr}</div><div class="small mut">${taxDone} von ${TAX_TOTAL}</div></div></div>
     </div>
     ${closing ? `<div class="card clickable row goldb" data-go="#/steuern">${icon('warn')}<div class="grow"><b>Jahresabschluss ${closing}</b><div class="small mut">Daten prüfen, Bestand per 31.12. einfrieren, Steuerpaket erstellen</div></div><span class="chev">›</span></div>` : ''}
     ${rc + inboxDocs ? `<div class="card clickable row" data-go="#/vault/inbox">${icon('warn')}<div class="grow"><b>Finance Inbox</b><div class="small mut">${[rc ? rc + ' Transaktion' + (rc > 1 ? 'en' : '') + ' zuordnen' : '', inboxDocs ? inboxDocs + ' Dokument' + (inboxDocs > 1 ? 'e' : '') + ' prüfen' : ''].filter(Boolean).join(' · ')}</div></div><span class="chev">›</span></div>` : ''}
@@ -321,18 +343,32 @@ export function openAccount(a = null) {
     render: () => `
       <label class="field"><span>Name</span><input name="name" value="${esc(d.name)}" placeholder="z. B. Raiffeisen Privat"></label>
       <div class="lbl">Art</div>${chips('kind', Object.entries(ACCOUNT_KINDS).map(([k, v]) => [k, v.l]), d.kind)}
-      <label class="field"><span>Aktueller Stand CHF</span><input name="value" inputmode="decimal" value="${esc(d.value)}"></label>
+      <label class="field"><span>Aktueller Stand CHF${(d.positions || []).length ? ' (automatisch aus Positionen)' : ''}</span><input name="value" inputmode="decimal" value="${esc(d.value)}"></label>
+      <div data-only-kind="securities" ${d.kind === 'securities' ? '' : 'hidden'}>
+        <label class="field"><span>Positionen (optional) – Ticker und Stückzahl, z. B. VWRL.SW 12; NESN.SW 5</span><input name="pos" autocapitalize="characters" autocomplete="off" spellcheck="false" value="${esc((d.positions || []).map((p) => p.ticker + ' ' + p.qty).join('; '))}" placeholder="VWRL.SW 12; CHSPI.SW 3"></label>
+        <div class="small mut">Mit Positionen bewertet dein Server das Depot täglich automatisch (Kurse von Yahoo Finance, Ticker wie dort, Schweizer Börse mit «.SW»). VIAC- oder Fonds-Portfolios ohne Ticker bitte weiter von Hand nachführen.</div>
+        ${(d.positions || []).map((p) => { const q = (S().stockPrices || {})[p.ticker]; return `<div class="txr"><span class="grow"><b>${esc(p.ticker)}</b><span class="small mut"> · ${esc(q ? q.name : 'noch kein Kurs')}</span></span><span class="small mut">${qty(p.qty)} ×</span><b>${q ? chf(p.qty * q.chf) : '–'}</b></div>`; }).join('')}
+      </div>
       <label class="check"><input type="checkbox" name="ng" ${d.tag === 'notgroschen' ? 'checked' : ''}> Das ist mein Notgroschen</label>
       ${a && a.history && a.history.length ? `<div class="lbl mt">Verlauf</div>${a.history.slice(-6).reverse().map((h) => `<div class="txr"><span class="grow small mut">${dmy(h.at)}</span><b>${chf(h.value)}</b></div>`).join('')}` : ''}
       <button class="btn gold block big mt" data-act="save">Speichern</button>
       ${a ? '<button class="btn danger block" data-act="del">Löschen</button>' : ''}`,
-    bind: (el) => el.addEventListener('click', (e) => {
+    bind: (el) => { bindChips(el, 'kind', (k) => { el.querySelector('[data-only-kind]').hidden = k !== 'securities'; }); el.addEventListener('click', (e) => {
       const b = e.target.closest('[data-act]'); if (!b) return; const s = S();
       if (b.dataset.act === 'del') { if (confirm('Konto löschen?')) { s.accounts = s.accounts.filter((q) => q.id !== a.id); s.goals = s.goals.filter((g) => !(g.kind === 'account' && g.accountId === a.id)); commit(); closeSheet(); } return; }
       const name = el.querySelector('[name=name]').value.trim(); if (!name) return toast('Name fehlt');
       const value = toNum(el.querySelector('[name=value]').value) ?? 0;
       if (Number.isNaN(value)) return toast('Betrag ungültig');
       const o = { name, kind: chipVal(el, 'kind') || 'bank', value, tag: el.querySelector('[name=ng]').checked ? 'notgroschen' : '' };
+      const rawPos = el.querySelector('[name=pos]').value.trim(); const positions = [];
+      if (o.kind === 'securities' && rawPos) {
+        for (const part of rawPos.split(/[;\n]+/).map((x) => x.trim()).filter(Boolean)) {
+          const m = /^([A-Za-z0-9.\-^=]{1,20})\s+([\d'’.,]+)$/.exec(part);
+          if (!m || !(toNum(m[2]) > 0)) return toast(`Position «${part}» nicht verstanden – Format: TICKER Stückzahl`);
+          positions.push({ ticker: m[1].toUpperCase(), qty: toNum(m[2]) });
+        }
+      }
+      o.positions = positions;
       if (a) {
         if (a.value !== value) { a.history = [...(a.history || []), { at: a.updated, value: a.value }]; a.updated = new Date().toISOString(); }
         Object.assign(a, o);
@@ -342,7 +378,8 @@ export function openAccount(a = null) {
         s.goals.push({ id: uid(), name: 'Notgroschen', kind: 'account', accountId: acc.id, unit: 'CHF', color: 'green', milestones: [7000], reached: {} });
       }
       commit(); toast('Gespeichert'); closeSheet();
-    }),
+      if (positions.length) dispatchEvent(new Event('serversync'));
+    }); },
   });
 }
 

@@ -38,8 +38,18 @@ function render() {
 }
 
 // ---------- Kurse + Meilensteine ----------
+// Mit Server: Kurse, Verläufe, Ledger und BingX kommen von dort (ein Abruf).
+// Ohne Server oder wenn er nicht erreichbar ist: Kurse direkt von CoinGecko.
 async function updatePrices(manual = false) {
   if (!isUnlocked()) return;
+  if (SRV.isConfigured() && navigator.onLine) {
+    const x = await SRV.syncAll({ quiet: true });
+    if (x && !x.legacy && Date.now() - new Date(S().pricesAt || 0) < 30 * 60e3) {
+      if (manual) toast(`Aktualisiert${x.trades ? ` · ${x.trades} neue Trades` : ''}${x.auto ? ` · ${x.auto} automatisch zugeordnet` : ''}`);
+      if (isUnlocked()) milestones();
+      return;
+    }
+  }
   const h = holdings();
   const r = await refreshPrices(Object.keys(h).filter((k) => h[k].qty > 1e-8));
   if (manual) toast(r.ok ? 'Kurse aktualisiert' : r.reason === 'offline' ? 'Offline – letzter Stand bleibt' : r.reason === 'busy' ? 'Kurse werden bereits geladen' : 'Kurse nicht erreichbar');
@@ -138,7 +148,6 @@ function start() {
   render();
   if (!started) { started = true; setInterval(() => { if (isUnlocked() && !document.hidden) updatePrices(); }, 5 * 60e3); }
   updatePrices();
-  SRV.syncAll();
 }
 // Erinnerungen nach Änderungen (z. B. neue Rechnung) automatisch an den Server
 let srvTimer;
@@ -157,7 +166,7 @@ document.addEventListener('visibilitychange', async () => {
   checkForUpdate();
   if (!isUnlocked()) return;
   if (hiddenAt && Date.now() - hiddenAt > (S().settings.autoLockMin || 5) * 60e3) doLock();
-  else { updatePrices(); SRV.syncAll(); }
+  else updatePrices();
   hiddenAt = null;
 });
 addEventListener('pagehide', () => { if (isUnlocked()) flush().catch(() => {}); });
@@ -167,6 +176,7 @@ addEventListener('online', () => isUnlocked() && updatePrices());
 addEventListener('hashchange', () => { closeAll(); render(); $('#view').scrollTop = 0; });
 addEventListener('rerender', render);
 addEventListener('refreshprices', () => updatePrices(true));
+addEventListener('serversync', () => { if (isUnlocked() && SRV.isConfigured()) SRV.syncAll({ force: true }); });
 onChange(() => { render(); refreshSheet(); });
 document.addEventListener('click', (e) => {
   const g = e.target.closest('[data-go]'); if (g) { e.preventDefault(); if (sheetOpen()) closeAll(); location.hash = g.dataset.go; }

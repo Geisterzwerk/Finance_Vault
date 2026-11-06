@@ -235,3 +235,6 @@ details summary { cursor: pointer; color: var(--gold); font-weight: 500; }
   .pr td { padding: 6px; border-bottom: 1px solid #ddd; } .pr .r { text-align: right; }
   .pr tfoot td { border-top: 2px solid #26272a; } .pr .small { font-size: 8pt; color: #666; }
 }
+.tcal { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.tcal:last-of-type { border-bottom: 0; }
+.tcal .right { min-width: 96px; font-variant-numeric: tabular-nums; }

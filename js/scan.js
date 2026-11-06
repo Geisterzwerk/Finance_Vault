@@ -387,7 +387,10 @@ export function classify(text, qr) {
   const t = (text || '') + ' ' + (qr ? `${qr.creditor} ${qr.message} ${qr.billInfo}` : '');
   for (const [re, r] of RULES) if (re.test(t)) {
     const o = { ...r };
-    if (o.category === 'Steuern') o.taxKind = /bund/i.test(t) ? 'Bund' : /gemeinde/i.test(t) ? 'Gemeinde' : 'Staat BL';
+    if (o.category === 'Steuern') {
+      o.taxKind = /bundessteuer|direkte bundes/i.test(t) ? 'Bund' : /gemeindesteuer|gemeinde\s/i.test(t) && !/staatssteuer/i.test(t) ? 'Gemeinde' : 'Staat BL';
+      o.taxStage = /definitiv|veranlagung|schlussrechnung/i.test(t) ? 'definitiv' : /provisorisch|vorausrechnung|akonto|rate/i.test(t) ? 'provisorisch' : /verzugszins|nachzahlung/i.test(t) ? 'nachzahlung' : '';
+    }
     return o;
   }
   return { kind: qr ? 'invoice' : 'doc', category: 'Sonstiges', tax: 'no', ziffer: '' };

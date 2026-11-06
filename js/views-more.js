@@ -15,7 +15,10 @@ import {
 import { TAX_TOTAL, openTx } from './views-main.js';
 import { inboxPage, documentsPage, ledgerPage, openScanner, taxExtrasHTML, bindTaxExtras } from './views-docs.js';
 import { remindersICS, TAX_KINDS } from './taxpack.js';
+import * as TC from './taxcal.js';
+import { progress, SLOTS } from './charts.js';
 import * as SRV from './server.js';
+import { autoResolve } from './auto.js';
 
 export const ui = { taxYear: new Date().getMonth() < 6 ? new Date().getFullYear() - 1 : new Date().getFullYear(), invSearch: '' };
 
@@ -38,6 +41,83 @@ const nrp = (v) => price(v).replace('CHF ', '');
 // =====================================================================
 // STEUERN
 // =====================================================================
+const fmtDay = (d) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+const inDays = (n) => (n < 0 ? `seit ${-n} Tag${n === -1 ? '' : 'en'} überfällig` : n === 0 ? 'heute' : n === 1 ? 'morgen' : `in ${n} Tagen`);
+function taxCalendarHTML() {
+  const items = TC.calendar(); const plan = TC.reservePlan(); const c = TC.cfg();
+  const row = (x) => {
+    const ic = x.done ? icon('ok') : x.status === 'over' ? icon('bad') : x.status === 'soon' ? icon('warn') : '<span class="ic empty"></span>';
+    if (x.type === 'file') {
+      return `<div class="tcal" data-cal="${x.id}"><div class="row">${ic}<div class="grow"><b>${x.title}</b>
+        <div class="small ${x.done ? 'pos' : x.status === 'over' ? 'neg' : x.status === 'soon' ? 'amber' : 'mut'}">${x.done ? 'eingereicht' + (x.filedAt ? ' am ' + dmy(x.filedAt) : '') : `bis ${fmtDay(x.due)} · ${inDays(x.days)}${x.due === x.ordinary ? ` · stillschweigend verlängert bis ${fmtDay(x.ext)}` : ' (verlängerte Frist)'}`}</div></div></div>
+        ${x.done ? '' : `<div class="qbtns"><button class="btn line sm" data-cal-act="filed" data-y="${x.year}">✓ Eingereicht</button><button class="btn sm" data-cal-act="ext" data-y="${x.year}">Frist verlängern …</button></div>`}</div>`;
+    }
+    const pct = x.soll > 0 ? x.paid / x.soll : 0; const ei = TC.earlyInterest(x); const li = TC.lateInterest(x);
+    return `<div class="tcal" data-cal="${x.id}"><div class="row">${progress(x.done ? 1 : pct, x.done ? SLOTS[2] : SLOTS[0], 40)}<div class="grow"><b>${esc(x.title)}</b>
+      <div class="small ${x.done ? 'pos' : x.status === 'over' ? 'neg' : x.status === 'soon' ? 'amber' : 'mut'}">${x.done ? 'bezahlt' : `bis ${fmtDay(x.due)} · ${inDays(x.days)}`}${x.stage === 'definitiv' ? ' · definitiv' : x.stage === 'provisorisch' ? ' · provisorisch' : ''}</div></div>
+      <div class="right"><b>${x.invoices.length ? chf(x.open, 2) : x.estimate ? '≈ ' + chf(x.estimate) : '–'}</b><div class="small mut">${x.done ? chf(x.soll, 2) : x.invoices.length ? 'offen' : x.estimate ? 'Schätzung Vorjahr' : 'Rechnung fehlt'}</div></div></div>
+      ${ei >= 1 ? `<div class="small mut">Heute bezahlt: ≈ ${chf(ei, 2)} Vergütungszins (${TC.KIND_LABEL[x.kind] && x.kind === 'Bund' ? c.vzBund : c.vzStaat} %).</div>` : ''}
+      ${li >= 1 ? `<div class="small neg">Verzugszins bisher ≈ ${chf(li, 2)} – bald bezahlen.</div>` : ''}
+      ${x.done ? '' : `<div class="qbtns">${x.invoices.length ? x.invoices.filter((i) => i.status !== 'paid').map((i) => `<button class="btn line sm" data-cal-act="pay" data-inv="${i.id}">✓ ${esc(i.taxStage === 'definitiv' ? 'Definitiv' : 'Rechnung')} ${chf(+i.amount)} bezahlt</button>`).join('') : ''}
+        <button class="btn sm" data-cal-act="addinv" data-kind="${esc(x.kind)}" data-y="${x.year}">＋ Rechnung erfassen</button></div>`}</div>`;
+  };
+  return `<div class="lbl mt">Steuerkalender</div><div class="card">${items.map(row).join('')}
+    <div class="small mut mt">Fristen Kanton Basel-Landschaft ${c.ratesYear} – jährlich auf steuern.bl.ch prüfen. Gemeindesteuer ${c.gemeindeSeparate ? `separat, fällig ${c.gemeindeDue.slice(3)}.${c.gemeindeDue.slice(0, 2)}.` : 'mit der Staatssteuer'} (<a class="link sm" data-cal-act="settings">ändern</a>).</div></div>
+  ${plan.total > 0 ? `<div class="lbl mt">Rücklage</div><div class="card"><div class="row">${progress(plan.coverage ?? 0, SLOTS[2], 54)}<div class="grow">
+      <div class="big2">${plan.missing > 0 ? chf(Math.ceil(plan.monthly / 10) * 10) + ' / Monat' : 'Gedeckt'}</div>
+      <div class="small mut">${plan.missing > 0 ? `zurücklegen, damit ${chf(plan.total)} offene Steuern rechtzeitig bezahlt sind` : `Rücklage deckt alle offenen Steuern (${chf(plan.total)})`}</div></div></div>
+    ${plan.rows.map((r) => `<div class="txr"><span class="grow small">${esc(r.title)} <span class="mut">· ${fmtDay(r.due)}</span></span><span class="small mut">${r.months} Mt.</span><b class="small">${chf(r.perMonth)} / Mt.</b></div>`).join('')}
+    <label class="field mt"><span>Rücklage-Konto (optional)</span><select data-reserve><option value="">– keins –</option>${S().accounts.filter((a) => a.kind !== 'liability').map((a) => `<option value="${a.id}" ${a.id === c.reserveAccountId ? 'selected' : ''}>${esc(a.name)} · ${chf(a.value)}</option>`).join('')}</select></label>
+    <div class="small mut">Tipp: ein eigenes Sparkonto für Steuern und einen Dauerauftrag in dieser Höhe einrichten.</div></div>` : ''}`;
+}
+function openTaxSettings() {
+  const c = TC.cfg();
+  openSheet({
+    title: 'Steuer-Einstellungen',
+    render: () => `<label class="check"><input type="checkbox" name="sep" ${c.gemeindeSeparate ? 'checked' : ''}> Meine Gemeinde stellt die Gemeindesteuer separat in Rechnung</label>
+      <label class="field"><span>Fälligkeit Gemeindesteuer (Tag.Monat)</span><input name="gdue" value="${esc(c.gemeindeDue.slice(3) + '.' + c.gemeindeDue.slice(0, 2))}" inputmode="numeric" placeholder="30.09"></label>
+      <div class="small mut">Steht auf der Rechnung der Gemeinde. Viele Baselbieter Gemeinden lassen die Gemeindesteuer seit 2026 vom Kanton beziehen – dann ist sie mit der Staatssteuer am 30.9. fällig.</div>
+      <div class="lbl mt">Zinssätze ${c.ratesYear} (steuern.bl.ch › Zinssätze)</div>
+      <div class="grid2"><label class="field"><span>Vergütungszins Staat %</span><input name="vzs" inputmode="decimal" value="${c.vzStaat}"></label><label class="field"><span>Vergütungszins Bund %</span><input name="vzb" inputmode="decimal" value="${c.vzBund}"></label>
+        <label class="field"><span>Verzugszins Staat %</span><input name="vgs" inputmode="decimal" value="${c.verzugStaat}"></label><label class="field"><span>Verzugszins Bund %</span><input name="vgb" inputmode="decimal" value="${c.verzugBund}"></label></div>
+      <label class="field"><span>Gültig für Jahr</span><input name="ry" inputmode="numeric" value="${c.ratesYear}"></label>
+      <button class="btn gold block big mt" data-act="save">Speichern</button>`,
+    bind: (el) => el.querySelector('[data-act=save]').addEventListener('click', () => {
+      const v = (n) => el.querySelector(`[name=${n}]`).value.trim(); const n = (x) => Number(String(x).replace(',', '.'));
+      const m = /^(\d{1,2})\.(\d{1,2})\.?$/.exec(v('gdue')); if (!m || +m[2] > 12 || +m[1] > 31) return toast('Fälligkeit als Tag.Monat, z. B. 30.09');
+      for (const k of ['vzs', 'vzb', 'vgs', 'vgb']) if (!(n(v(k)) >= 0 && n(v(k)) < 20)) return toast('Zinssatz ungültig');
+      Object.assign(c, { gemeindeSeparate: el.querySelector('[name=sep]').checked, gemeindeDue: `${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`,
+        vzStaat: n(v('vzs')), vzBund: n(v('vzb')), verzugStaat: n(v('vgs')), verzugBund: n(v('vgb')), ratesYear: +v('ry') || c.ratesYear });
+      commit(); toast('Gespeichert'); closeSheet();
+    }),
+  });
+}
+function openExtension(y) {
+  const t = ty(y);
+  openSheet({
+    title: `Frist ${y}`,
+    render: () => `<div class="note">Bis <b>31.05.${y + 1}</b> ist die Frist automatisch verlängert – ohne Gesuch, ohne Gebühr. Brauchst du länger, stell ein Gesuch online (E-Tax BL / steuern.bl.ch › Fristerstreckung). Längere Verlängerungen sind gebührenpflichtig (CHF 40, Stand 2024), sehr lange müssen begründet werden.</div>
+      <label class="field mt"><span>Neue Frist laut Bestätigung</span><input name="d" type="date" value="${esc(t.extUntil || `${y + 1}-05-31`)}"></label>
+      <button class="btn gold block big mt" data-act="save">Frist übernehmen</button>`,
+    bind: (el) => el.querySelector('[data-act=save]').addEventListener('click', () => {
+      const d = el.querySelector('[name=d]').value; if (!d) return toast('Datum fehlt');
+      t.extUntil = d; commit(); toast('Frist gespeichert'); closeSheet();
+    }),
+  });
+}
+function bindTaxCalendar(el) {
+  el.querySelector('[data-reserve]')?.addEventListener('change', (e) => { TC.cfg().reserveAccountId = e.target.value; commit(); });
+  el.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-cal-act]'); if (!b) return;
+    const a = b.dataset.calAct; const s = S();
+    if (a === 'settings') return openTaxSettings();
+    if (a === 'ext') return openExtension(+b.dataset.y);
+    if (a === 'filed') { const t = ty(+b.dataset.y); t.filed = new Date().toISOString(); t.checklist.eingereicht = true; commit(); toast(`Erklärung ${b.dataset.y} als eingereicht markiert – PDF unter «Archiv» ablegen`); return; }
+    if (a === 'pay') { const i = s.invoices.find((x) => x.id === b.dataset.inv); if (i && confirm(`${chf(+i.amount, 2)} als bezahlt markieren?`)) { i.status = 'paid'; i.paidAt = isoDay(new Date()); commit(); toast('Als bezahlt markiert'); } return; }
+    if (a === 'addinv') return openInvoice(null, { category: 'Steuern', taxKind: b.dataset.kind, taxYear: +b.dataset.y, issuer: b.dataset.kind === 'Gemeinde' ? 'Gemeinde' : 'Steuerverwaltung Basel-Landschaft', title: `${TC.KIND_LABEL[b.dataset.kind] || 'Steuer'} ${b.dataset.y}`, due: TC.legalDue(b.dataset.kind, +b.dataset.y), taxStage: 'provisorisch' });
+  });
+}
+
 export function taxes() {
   const y = ui.taxYear; const t = ty(y);
   const snap = t.closed ? t.snapshot : null;
@@ -50,9 +130,12 @@ export function taxes() {
   const byZ = {}; inv.forEach((i) => { (byZ[i.ziffer || '–'] ||= []).push(i); });
   const groups = [...new Set(CHECKLIST.map((c) => c[3]))];
   const prev = S().taxYears[y - 1] || {};
+  const ev = TC.evidence(y);
   return {
     title: `Steuern ${y}`, sub: `${esc(S().settings.canton)} · E-Tax BL <button class="ybtn" data-y="-1">‹</button><button class="ybtn" data-y="1">›</button>`,
     html: `
+    ${taxCalendarHTML()}
+    <div class="lbl mt">Steuererklärung ${y}</div>
     <div class="card hero"><div class="lbl">Vorbereitung</div><div class="row"><div class="serif huge grow">${Math.round((done / TAX_TOTAL) * 100)} %</div><span class="small mut">${done} von ${TAX_TOTAL} erledigt</span></div>${bar(done / TAX_TOTAL)}</div>
     ${taxExtrasHTML(y)}
     <div class="lbl mt">Crypto-Steuerbericht · Bestand per 31.12.${y}</div>
@@ -71,11 +154,12 @@ export function taxes() {
     </div>
     <div class="lbl mt">Checkliste E-Tax BL</div>
     ${groups.map((g) => `<div class="small mut gl">${g}</div>${CHECKLIST.filter((c) => c[3] === g).map(([k, l, z]) => `
-      <div class="chk clickable" data-chk="${k}">${t.checklist[k] ? icon('ok') : '<span class="ic empty"></span>'}<span class="grow ${t.checklist[k] ? '' : 'b'}">${l}${!t.checklist[k] && prev.checklist && prev.checklist[k] ? ' <span class="tag">im Vorjahr</span>' : ''}</span><span class="small mut">Ziffer ${z}</span></div>`).join('')}`).join('')}
+      <div class="chk clickable" data-chk="${k}">${t.checklist[k] ? icon('ok') : '<span class="ic empty"></span>'}<span class="grow ${t.checklist[k] ? '' : 'b'}">${l}${!t.checklist[k] && ev[k] ? ` <span class="tag">${ev[k]} Beleg${ev[k] > 1 ? 'e' : ''} da</span>` : ''}${!t.checklist[k] && !ev[k] && prev.checklist && prev.checklist[k] ? ' <span class="tag">im Vorjahr</span>' : ''}</span><span class="small mut">Ziffer ${z}</span></div>`).join('')}`).join('')}
     <div class="small mut mt">Die Ziffern stammen aus deiner Steuererklärung 2023. Bitte jedes Jahr im E-Tax BL kontrollieren.</div>
     ${inv.length ? `<div class="lbl mt">Steuerrelevante Belege ${y}</div>${Object.entries(byZ).map(([z, list]) => `<div class="card"><div class="row"><b class="grow">Ziffer ${esc(z)}</b><b>${chf(list.reduce((a, i) => a + (+i.amount || 0), 0), 2)}</b></div>
       ${list.map((i) => `<div class="txr clickable" data-inv="${i.id}">${i.tax === 'yes' ? icon('ok') : icon('warn')}<span class="grow small">${esc(i.issuer)} · ${esc(i.title || '')}</span><span class="small">${chf(+i.amount, 2)}</span></div>`).join('')}</div>`).join('')}` : ''}`,
-    bind: (el) => { bindTaxExtras(el, y, (yy) => { ui.taxYear = yy; dispatchEvent(new Event('rerender')); scrollTo(0, 0); }); el.addEventListener('click', async (e) => {
+    bind: (el) => { bindTaxCalendar(el); bindTaxExtras(el, y, (yy) => { ui.taxYear = yy; dispatchEvent(new Event('rerender')); scrollTo(0, 0); }); el.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-cal-act], [data-reserve]')) return;
       const yb = e.target.closest('[data-y]'); if (yb) { ui.taxYear += +yb.dataset.y; dispatchEvent(new Event('rerender')); return; }
       const c = e.target.closest('[data-chk]'); if (c) { t.checklist[c.dataset.chk] = !t.checklist[c.dataset.chk]; commit(); return; }
       const i = e.target.closest('[data-inv]'); if (i) return openInvoice(S().invoices.find((q) => q.id === i.dataset.inv));
@@ -169,12 +253,12 @@ export function invoices() {
   };
 }
 
-export function openInvoice(inv = null) {
-  const d = inv ? { ...inv } : { issuer: '', title: '', number: '', amount: '', due: '', category: '', tax: 'no', ziffer: '', status: 'open', paidAt: '', note: '', taxKind: '', taxYear: null };
+export function openInvoice(inv = null, preset = null) {
+  const d = inv ? { ...inv } : { issuer: '', title: '', number: '', amount: '', due: '', category: '', tax: 'no', ziffer: '', status: 'open', paidAt: '', note: '', taxKind: '', taxYear: null, taxStage: '', ...(preset || {}) };
   let newFile = null;
   const capture = (el) => {
     const v = (n) => el.querySelector(`[name=${n}]`)?.value ?? '';
-    Object.assign(d, { issuer: v('issuer'), title: v('title'), number: v('number'), amount: v('amount'), due: v('due'), category: v('category'), ziffer: v('ziffer'), note: v('note'), paidAt: v('paidAt') || d.paidAt, tax: chipVal(el, 'tax') || d.tax, taxKind: v('taxKind'), taxYear: v('taxYear') ? +v('taxYear') : null });
+    Object.assign(d, { issuer: v('issuer'), title: v('title'), number: v('number'), amount: v('amount'), due: v('due'), category: v('category'), ziffer: v('ziffer'), note: v('note'), paidAt: v('paidAt') || d.paidAt, tax: chipVal(el, 'tax') || d.tax, taxKind: v('taxKind'), taxYear: v('taxYear') ? +v('taxYear') : null, taxStage: v('taxStage') });
   };
   openSheet({
     title: inv ? inv.issuer : 'Neue Rechnung', capture,
@@ -195,7 +279,8 @@ export function openInvoice(inv = null) {
       <div class="lbl">Steuer</div>${chips('tax', [['no', 'nicht relevant'], ['maybe', 'möglicherweise'], ['yes', 'steuerrelevant']], d.tax)}
       <label class="field"><span>E-Tax-Ziffer (z. B. 650 Weiterbildung, 720 Krankheit)</span><input name="ziffer" value="${esc(d.ziffer)}" inputmode="numeric"></label>
       <div class="grid2"><label class="field"><span>Steuerart (nur Kategorie Steuern)</span><select name="taxKind"><option value="">–</option>${TAX_KINDS.map((k) => `<option ${k === d.taxKind ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
-        <label class="field"><span>Für Steuerjahr</span><input name="taxYear" inputmode="numeric" value="${esc(d.taxYear || '')}" placeholder="z. B. ${new Date().getFullYear() - 1}"></label></div>
+        <label class="field"><span>Für Steuerjahr</span><input name="taxYear" inputmode="numeric" value="${esc(d.taxYear || '')}" placeholder="z. B. ${new Date().getFullYear() - 1}"></label>
+        <label class="field span2"><span>Rechnungsart (nur Steuern)</span><select name="taxStage"><option value="">–</option>${[['provisorisch', 'Provisorisch / Vorausrechnung'], ['definitiv', 'Definitiv (nach Veranlagung)'], ['nachzahlung', 'Nachzahlung / Zins']].map(([k, l]) => `<option value="${k}" ${k === d.taxStage ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
       <label class="field"><span>Notiz</span><input name="note" value="${esc(d.note || '')}"></label>
       <div class="lbl">Beleg (Foto oder PDF)</div>
       <label class="btn line block">📷 ${inv && inv.file ? 'Beleg ersetzen' : 'Foto / PDF hinzufügen'}<input type="file" name="file" accept="image/*,application/pdf" hidden></label>
@@ -341,6 +426,7 @@ function openBingx(files, ignored) {
         BX.apply(result);
         s.imports.BingX = { last: new Date().toISOString(), count: result.txs.length, to: result.to, toMs: result.toMs };
         commit(); closeAll(); toast('BingX übernommen'); dispatchEvent(new Event('refreshprices'));
+        autoResolve().then((n) => { if (n) { commit(); toast(`${n} Einzahlung${n > 1 ? 'en' : ''} automatisch als eigener Transfer erkannt`, 4000); } });
         if (Object.keys(result.stats.missingHistory).length) setTimeout(() => { location.hash = '#/invest'; }, 300);
       }
     }),
@@ -466,7 +552,9 @@ function serverCard() {
     <button class="btn gold block" data-act="srvpair">Server verbinden</button>`;
   return `<div class="card"><div class="row">${c.status && !c.status.ok ? icon('warn') : icon('ok')}<div class="grow"><b>${esc(c.url.replace('https://', ''))}</b>
       <div class="small ${c.status && !c.status.ok ? 'amber' : 'mut'}">${c.status ? esc(c.status.msg) : 'gekoppelt'} · Abgleich ${c.lastSync ? ago(c.lastSync) : 'noch nie'}</div>
-      <div class="small mut">Mitteilungen: ${c.push ? 'aktiv' : 'aus'} · BingX: ${c.bingx ? (c.bingxLast ? 'Server-Sync ' + ago(new Date(c.bingxLast)) : 'konfiguriert') : 'kein API-Schlüssel'}</div></div></div></div>
+      <div class="small mut">Mitteilungen: ${c.push ? 'aktiv' : 'aus'} · BingX: ${c.bingx ? (c.bingxLast ? 'Server-Sync ' + ago(new Date(c.bingxLast)) : 'konfiguriert') : 'kein API-Schlüssel'}${c.version ? ' · Server v' + esc(c.version) : ''}</div>
+      ${(() => { const w = SRV.buildWatch(); return `<div class="small mut">Beobachtet: ${Object.keys(w.coins).length} Coins, ${w.tickers.length} Wertschriften, ${w.addresses.length} Adressen – keine Mengen, keine Beträge.</div>`; })()}</div></div></div>
+    <label class="check"><input type="checkbox" data-set="ledgerViaServer" ${S().settings.ledgerViaServer !== false ? 'checked' : ''}> Ledger-Adressen über den Server prüfen (automatisch, mit Push bei Änderungen)</label>
     <div class="grid2"><button class="btn ${c.push ? 'line' : 'gold'}" data-act="srvpush">${c.push ? 'Push erneuern' : '🔔 Mitteilungen aktivieren'}</button><button class="btn line" data-act="srvtest">Test-Mitteilung</button></div>
     <div class="grid2"><button class="btn line" data-act="srvsync">↻ Jetzt abgleichen</button><button class="btn line" data-act="srvbx">BingX neu abfragen</button></div>
     <button class="btn danger block" data-act="srvoff">Server trennen</button>`;
@@ -482,8 +570,8 @@ async function serverAction(a, el, b) {
     }
     if (a === 'srvpush') { busy('Aktiviere …'); await SRV.enablePush(); await SRV.syncReminders(true); toast('Mitteilungen aktiv'); }
     if (a === 'srvtest') { busy('Sende …'); const r = await SRV.testPush(); toast(r.ok ? 'Test gesendet – kommt gleich' : 'Kein Gerät registriert – zuerst Mitteilungen aktivieren'); }
-    if (a === 'srvsync') { busy('Gleiche ab …'); const r = await SRV.syncAll({ quiet: false }); toast(r && r.bx && r.bx.added ? `${r.bx.added} neue BingX-Trades` : 'Abgeglichen'); }
-    if (a === 'srvbx') { busy('Frage BingX ab …'); const r = await SRV.triggerBingx(); await SRV.syncBingx(); toast(r.ok ? `BingX: ${r.new} neue Trades` : 'BingX: ' + (r.error || 'Fehler')); }
+    if (a === 'srvsync') { busy('Gleiche ab …'); const r = await SRV.syncAll({ quiet: false, force: true }); toast(r ? `Abgeglichen${r.trades ? ` · ${r.trades} Trades` : ''}${r.funding ? ` · ${r.funding} Ein-/Auszahlungen` : ''}${r.auto ? ` · ${r.auto} automatisch zugeordnet` : ''}` : 'Abgeglichen'); }
+    if (a === 'srvbx') { busy('Frage BingX ab …'); const r = await SRV.triggerBingx(); await SRV.syncAll({ quiet: false }); toast(r.ok ? `BingX: ${r.new} neue Trades${r.newFunding ? `, ${r.newFunding} Ein-/Auszahlungen` : ''}` : 'BingX: ' + (r.error || 'Fehler')); }
     if (a === 'srvoff' && confirm('Verbindung zum Server trennen? Der Zugang wird auch auf dem Server gelöscht.')) { busy('Trenne …'); await SRV.unpair(); toast('Getrennt'); }
   } catch (e) { toast(e.message, 4000); }
   commit();
@@ -518,9 +606,10 @@ function settingsPage() {
     <div class="small mut center mt">Finance Vault v${APP_VERSION} · ${S().transactions.length} Transaktionen · ${S().invoices.length} Rechnungen</div>`,
     bind: (el) => {
       el.querySelectorAll('[data-set]').forEach((i) => i.addEventListener('change', () => {
-        s[i.dataset.set] = i.type === 'number' ? Math.min(60, Math.max(1, Math.round(Number(i.value) || 5))) : i.value.trim();
+        s[i.dataset.set] = i.type === 'checkbox' ? i.checked : i.type === 'number' ? Math.min(60, Math.max(1, Math.round(Number(i.value) || 5))) : i.value.trim();
         if (i.type === 'number') i.value = s[i.dataset.set];
         commit(); toast('Gespeichert');
+        if (i.dataset.set === 'ledgerViaServer') dispatchEvent(new Event('serversync'));
       }));
       el.querySelector('[data-act=restore]').addEventListener('change', async (e) => {
         const f = e.target.files[0]; e.target.value = ''; if (!f) return;
