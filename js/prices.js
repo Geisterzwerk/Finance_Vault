@@ -32,7 +32,9 @@ export async function resolveId(sym) {
   try {
     const j = await (await fetch(url('/search', { query: sym }))).json();
     const hit = (j.coins || []).find((c) => c.symbol.toUpperCase() === sym.toUpperCase());
-    if (hit) { S().coins[sym] = { ...(S().coins[sym] || {}), id: hit.id, name: hit.name }; commit(true); return hit.id; }
+    // auto: nur per Symbol gefunden – kann ein Namensvetter sein. Bis zur Bestätigung im
+    // Coin-Detail zählt der Coin nicht für Meilensteine.
+    if (hit) { S().coins[sym] = { ...(S().coins[sym] || {}), id: hit.id, name: hit.name, auto: true }; commit(true); return hit.id; }
   } catch (e) { /* offline */ }
   return null;
 }

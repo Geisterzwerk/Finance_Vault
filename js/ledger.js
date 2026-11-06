@@ -40,6 +40,20 @@ export const CHAINS = {
       return { ETH: eth, LINK: link, ONDO: ondo };
     },
   },
+  hype: {
+    label: 'Hyperliquid (HYPE)', hint: 'Adresse 0x… – meist dieselbe wie dein Ethereum-Konto im Ledger. Geprüft werden HyperCore (Spot + Staking) und HyperEVM.',
+    async fetch(a) {
+      const user = a.toLowerCase();
+      const info = (body) => j('https://api.hyperliquid.xyz/info', body);
+      const spot = await info({ type: 'spotClearinghouseState', user });
+      const core = Number(((spot.balances || []).find((b) => b.coin === 'HYPE') || {}).total || 0);
+      let staked = 0;
+      try { const d = await info({ type: 'delegatorSummary', user }); staked = Number(d.delegated || 0) + Number(d.undelegated || 0) + Number(d.totalPendingWithdrawal || 0); } catch (e) { /* kein Staking */ }
+      let evm = 0;
+      try { evm = hexToNum((await rpc('https://rpc.hyperliquid.xyz/evm', 'eth_getBalance', [a, 'latest'])).result, 18); } catch (e) { /* HyperEVM nicht erreichbar */ }
+      return { HYPE: core + staked + evm };
+    },
+  },
   avax: {
     label: 'Avalanche C-Chain (AVAX)', hint: 'Adresse 0x… (C-Chain)',
     async fetch(a) { return { AVAX: hexToNum((await rpc('https://api.avax.network/ext/bc/C/rpc', 'eth_getBalance', [a, 'latest'])).result, 18) }; },

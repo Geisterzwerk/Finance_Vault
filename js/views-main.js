@@ -2,13 +2,13 @@
 // views-main.js – Übersicht, Invest, Coin-Detail, Konten, Ziele
 // =====================================================================
 import { S, commit, uid, deleteTx } from './store.js';
-import { TYPES, ACCOUNT_KINDS, portfolio, netWorth, holdings, goalProgress, reviewCount, typeInfo } from './calc.js';
+import { TYPES, ACCOUNT_KINDS, portfolio, netWorth, holdings, goalProgress, reviewCount, typeInfo, staleMilestones, resetMilestones } from './calc.js';
 import { coinId } from './prices.js';
 import { closingDue } from './taxpack.js';
 import { openEstimate, missingOpenings } from './estimate.js';
 import {
   esc, chf, qty, price, pct, cls, dmy, dmyShort, hm, ago, daysUntil, greeting, longDate, bar, icon,
-  openSheet, closeSheet, toast, chips, chipVal, bindChips, confetti,
+  openSheet, closeSheet, toast, chips, chipVal, bindChips, confetti, rerender,
 } from './ui.js';
 
 export const ui = { investTab: 'crypto' };
@@ -92,7 +92,7 @@ export function invest() {
       ${missingOpenings().length ? `<div class="card row clickable goldb" data-act="estimate">${icon('warn')}<div class="grow"><b>Kaufpreise fehlen (${missingOpenings().length})</b><div class="small mut">Käufe stehen nicht im Export. Mit historischem Kurs schätzen?</div></div><span class="gold">›</span></div>` : ''}
       <div class="thead"><span>Coin</span><span>Ø Kauf</span><span>Wert / P/L</span></div>
       ${pf.held.map((x) => `<div class="coin clickable" data-coin="${esc(x.asset)}">
-        <div class="cic">${esc(x.asset[0])}</div><div class="grow"><b>${esc(x.asset)}</b><div class="small mut">${qty(x.qty)}</div></div>
+        <div class="cic">${esc(x.asset[0])}</div><div class="grow"><b>${esc(x.asset)}</b><div class="small mut">${qty(x.qty)}${x.unverified ? ' · <span class="amber">Kurs prüfen</span>' : ''}</div></div>
         <div class="avg">${avgCell(x)}</div>
         <div class="right"><b>${x.value != null ? chf(x.value) : '–'}</b><div class="small ${x.quality === 'missing' ? 'amber' : cls(x.unrealPct)}">${x.quality === 'missing' ? 'Historie fehlt' : pct(x.unrealPct)}</div></div></div>`).join('')
         || '<div class="card mut">Noch keine Crypto-Transaktionen. Importiere sie unter Vault.</div>'}
@@ -154,6 +154,7 @@ export function openCoin(sym) {
       ${txs.slice(0, 200).map((t) => `<div class="txr clickable" data-tx="${t.id}"><i class="dotc ${typeInfo(t.type).c}"></i><div class="grow"><b>${esc(typeInfo(t.type).l)}</b><div class="small mut">${dmyShort(t.date)} · ${esc(t.platform || '')}${t.to ? ' › ' + esc(t.to) : ''}</div></div>
         <div class="right"><b>${t.type === 'sell' || t.type === 'fee' ? '-' : t.type === 'transfer' ? '' : '+'}${qty(t.amount)}</b><div class="small ${t.estimate ? 'amber' : 'mut'}">${t.type === 'transfer' ? (t.feeQty ? 'Gebühr ' + qty(t.feeQty) : 'kein Kauf') : t.type === 'reward' ? 'Kosten 0' : t.type === 'ignore' ? 'zählt nicht' : t.chf != null ? (t.estimate ? '≈ ' : '') + chf(t.chf, 2) : 'CHF fehlt'}</div></div></div>`).join('')}
       <div class="lbl mt">Einstellungen</div>
+      ${(s.coins[sym] || {}).auto ? `<div class="note amber"><b>Kurs automatisch zugeordnet:</b> «${esc(s.coins[sym].name || s.coins[sym].id)}» (${esc(s.coins[sym].id)}). Gleiche Kürzel gibt es oft mehrfach – auch bei Scam-Coins. Bis du die ID mit «Speichern» bestätigst, zählt ${esc(sym)} nicht für Meilensteine. Stimmt er nicht: richtige ID von coingecko.com eintragen oder Coin ausblenden.</div>` : ''}
       <label class="field"><span>CoinGecko-ID (für Kurse)</span><input name="cgid" value="${esc(coinId(sym) || '')}" placeholder="z. B. kaspa"></label>
       <label class="field"><span>Liegt auf (Verwahrung)</span><input name="loc" value="${esc((s.coins[sym] || {}).location || '')}" placeholder="${esc(x.location || 'z. B. Ledger')}"></label>
       <button class="btn line block" data-act="save">Speichern</button>
@@ -168,10 +169,15 @@ export function openCoin(sym) {
       if (b.dataset.act === 'estimate') openEstimate();
       if (b.dataset.act === 'hide' && confirm(`${sym} ausblenden? Er zählt dann nirgends mehr mit (Vermögen, Steuer, Zuordnen). Die Buchungen bleiben gespeichert.`)) {
         const st = S().settings; st.ignoredAssets = [...new Set([...(st.ignoredAssets || []), sym])];
-        commit(); closeSheet(); toast(`${sym} ausgeblendet`);
+        closeSheet();
+        // Meilensteine, die nur dank dieses Coins erreicht waren, zum Zurücksetzen anbieten
+        const nw2 = netWorth({ verifiedOnly: true });
+        const hit = S().goals.map((g) => [g, staleMilestones(g, nw2)]).filter(([, l]) => l.length);
+        if (hit.length && confirm(`Ohne ${sym} liegen ${hit.reduce((a, [, l]) => a + l.length, 0)} erreichte Meilensteine über deinem Wert:\n${hit.map(([g, l]) => `${g.name}: ${l.map((m) => fmtGoal(m, g.unit)).join(', ')}`).join('\n')}\n\nZurücksetzen?`)) hit.forEach(([g, l]) => resetMilestones(g, l));
+        commit(); toast(`${sym} ausgeblendet`);
       }
       if (b.dataset.act === 'save') {
-        const s = S(); s.coins[sym] = { ...(s.coins[sym] || {}), id: el.querySelector('[name=cgid]').value.trim(), location: el.querySelector('[name=loc]').value.trim() };
+        const s = S(); s.coins[sym] = { ...(s.coins[sym] || {}), id: el.querySelector('[name=cgid]').value.trim(), location: el.querySelector('[name=loc]').value.trim(), auto: false };
         commit(); toast('Gespeichert'); dispatchEvent(new Event('refreshprices'));
       }
     }),
@@ -291,6 +297,7 @@ export function goals() {
         <div class="lbl ${g.color}">${esc(g.name)}</div>
         <div class="row"><div class="serif big2 grow">${fmtGoal(p.value, g.unit)}</div><span class="small mut">${p.done ? 'alle erreicht' : 'Ziel ' + fmtGoal(p.next, g.unit)}</span></div>
         ${bar(p.pct, g.color)}
+        ${staleMilestones(g).length ? `<div class="small amber">${staleMilestones(g).length} erreicht, aber aktuell darunter – prüfen</div>` : ''}
         <div class="row small"><span class="grow mut">${p.reachedCount} von ${p.total} Meilensteinen</span><b class="${g.color}">${(p.pct * 100).toFixed(0)} %</b></div></div>`;
     }).join('') + `<button class="btn gold block mt" data-act="add">＋ Ziel hinzufügen</button>
       <div class="small mut mt">Konfetti gibt es nur beim ersten Erreichen eines Meilensteins. Keine Streaks, kein Druck.</div>`,
@@ -310,10 +317,12 @@ export function openGoal(goal = null) {
       const nw = netWorth(); const ms = [...d.milestones].sort((a, b) => a - b);
       const p = goal ? goalProgress(goal, nw) : null;
       return `
-      ${goal ? `<div class="lbl">Meilenstein-Kette</div><div class="card chain">${ms.map((m) => `<div class="mrow ${goal.reached[m] ? 'done' : m === p.next ? 'next' : ''}">
+      ${goal && staleMilestones(goal).length ? `<div class="note amber"><b>${staleMilestones(goal).length} erreichte${staleMilestones(goal).length > 1 ? '' : 'r'} Meilenstein${staleMilestones(goal).length > 1 ? 'e liegen' : ' liegt'} über deinem aktuellen Wert.</b> Wenn ein Kursrückgang der Grund ist, ist das normal. Wurde er nur durch falsche Daten erreicht (z. B. Scam-Coin), setz ihn zurück.
+        <button class="btn line sm mt" data-act="resetstale">Zurücksetzen: ${staleMilestones(goal).map((m) => fmtGoal(m, d.unit)).join(', ')}</button></div>` : ''}
+      ${goal ? `<div class="lbl">Meilenstein-Kette</div><div class="card chain">${ms.map((m) => `<div class="mrow ${goal.reached[m] ? 'done clickable' : m === p.next ? 'next' : ''}" ${goal.reached[m] ? `data-ms="${m}"` : ''}>
         <span class="mdot">${goal.reached[m] ? '✓' : ''}</span><b class="grow">${fmtGoal(m, d.unit)}</b>
         <span class="small ${goal.reached[m] ? 'pos' : 'mut'}">${goal.reached[m] ? 'erreicht ' + dmy(goal.reached[m]) : m === p.next ? 'nächstes Ziel' : ''}</span></div>`).join('')}</div>
-        <div class="small mut">Aktuell: ${fmtGoal(p.value, d.unit)}</div>` : ''}
+        <div class="small mut">Aktuell: ${fmtGoal(p.value, d.unit)} · Tipp auf einen erreichten Meilenstein, um ihn abzuwählen.</div>` : ''}
       <label class="field"><span>Name</span><input name="name" value="${esc(d.name)}"></label>
       <div class="lbl">Was wird gemessen?</div>
       ${chips('kind', [['networth', 'Gesamtvermögen'], ['crypto', 'Crypto total'], ['asset', 'Coin-Menge'], ['category', 'Kategorie'], ['account', 'Konto']], d.kind)}
@@ -331,7 +340,18 @@ export function openGoal(goal = null) {
       ${goal ? '<button class="btn danger block" data-act="del">Ziel löschen</button>' : ''}`;
     },
     bind: (el) => el.addEventListener('click', (e) => {
+      const mr = e.target.closest('[data-ms]');
+      if (mr && goal) {
+        const m = +mr.dataset.ms;
+        if (confirm(`Meilenstein ${fmtGoal(m, d.unit)} als NICHT erreicht markieren? Er wird wieder gefeiert, sobald du ihn echt erreichst.`)) { resetMilestones(goal, [m]); commit(); rerender(); toast('Meilenstein zurückgesetzt'); }
+        return;
+      }
       const b = e.target.closest('[data-act]'); if (!b) return;
+      if (b.dataset.act === 'resetstale') {
+        const st = staleMilestones(goal);
+        if (st.length && confirm(`${st.length} Meilenstein${st.length > 1 ? 'e' : ''} zurücksetzen?`)) { resetMilestones(goal, st); commit(); rerender(); toast('Zurückgesetzt'); }
+        return;
+      }
       if (b.dataset.act === 'del') { if (confirm('Ziel löschen?')) { s.goals = s.goals.filter((q) => q.id !== goal.id); commit(); closeSheet(); } return; }
       const kind = chipVal(el, 'kind') || 'networth';
       const ref = el.querySelector('[name=ref]').value;

@@ -119,7 +119,9 @@ export function holdings(until = null) {
 }
 
 // Mit Live-Kursen kombinieren
-export function portfolio() {
+// verifiedOnly: Coins, deren Kurs-ID nur automatisch (per Symbolsuche) gefunden wurde,
+// nicht mitzählen. So können Scam-/Namensvettern-Coins keine Meilensteine auslösen.
+export function portfolio({ verifiedOnly = false } = {}) {
   const s = S();
   const list = Object.values(holdings()).filter((x) => x.qty > 1e-8 || Math.abs(x.realized) > 0.005);
   let total = 0, cost = 0, unreal = 0, realized = 0, realizedUnknown = false, missingPrice = 0;
@@ -127,7 +129,8 @@ export function portfolio() {
     const p = s.prices[x.asset];
     x.price = p ? p.chf : null;
     x.change24h = p ? p.change24h : null;
-    x.value = x.price != null ? x.qty * x.price : null;
+    x.unverified = !!(s.coins[x.asset] && s.coins[x.asset].auto);
+    x.value = x.price != null && !(verifiedOnly && x.unverified) ? x.qty * x.price : null;
     x.unreal = x.value != null && x.avg != null ? x.value - x.cost : null;
     x.unrealPct = x.unreal != null && x.cost > 0 ? (x.unreal / x.cost) * 100 : null;
     if (x.value != null) total += x.value; else if (x.qty > 1e-8) missingPrice++;
@@ -138,9 +141,9 @@ export function portfolio() {
   return { list, total, unreal, unrealPct: cost > 0 ? (unreal / cost) * 100 : null, realized, realizedUnknown, missingPrice, held: list.filter((x) => x.qty > 1e-8) };
 }
 
-export function netWorth() {
+export function netWorth(opts = {}) {
   const s = S();
-  const pf = portfolio();
+  const pf = portfolio(opts);
   const g = { crypto: pf.total, securities: 0, pillar3a: 0, cash: 0, liability: 0 };
   for (const a of s.accounts) g[(ACCOUNT_KINDS[a.kind] || ACCOUNT_KINDS.bank).group] += Number(a.value) || 0;
   const assets = g.crypto + g.securities + g.pillar3a + g.cash;
@@ -171,7 +174,7 @@ export function goalProgress(goal, nw) {
 // Ohne Kurse wird Vermögen/Crypto nicht geprüft, damit nichts falsch ausgelöst wird.
 export function checkMilestones() {
   const s = S();
-  const nw = netWorth();
+  const nw = netWorth({ verifiedOnly: true });
   const fresh = [];
   for (const g of s.goals) {
     if ((g.kind === 'networth' || g.kind === 'crypto') && !s.pricesAt && s.transactions.length) continue;
@@ -182,6 +185,15 @@ export function checkMilestones() {
   }
   return fresh;
 }
+
+// Erreichte Meilensteine, die über dem aktuellen Wert liegen (z. B. nur dank
+// Scam-Coin oder falscher Daten erreicht). Kursrückgänge sind normal – darum
+// wird nie automatisch zurückgesetzt, nur auf Wunsch.
+export function staleMilestones(goal, nw = netWorth({ verifiedOnly: true })) {
+  const v = goalValue(goal, nw);
+  return goal.milestones.filter((m) => goal.reached[m] && v < m).sort((a, b) => a - b);
+}
+export function resetMilestones(goal, list) { for (const m of list) delete goal.reached[m]; }
 
 export const typeInfo = (t) => TYPES[t] || { l: String(t || '?'), c: 'grey' };
 export const reviewCount = () => { const h = hiddenAssets(); return S().transactions.filter((t) => t.type === 'review' && !h.has(t.asset)).length; };
