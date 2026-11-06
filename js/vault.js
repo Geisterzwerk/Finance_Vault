@@ -199,9 +199,8 @@ export function backupInfo(text) {
   return { version: d.version, needsPassword: d.version === 2, exported: d.exported };
 }
 
-// Prüft Backup-Passwort UND PIN des Backups, bevor irgendetwas ersetzt wird.
-// Danach wird alles in einer einzigen Transaktion ersetzt.
-export async function importBackup(text, { password = '', pin = '' } = {}) {
+// Backup öffnen und prüfen (Backup-Passwort + PIN), ohne etwas zu verändern
+async function openBackupFile(text, password, pin) {
   let data = JSON.parse(text);
   if (data.app !== 'FinanceVault') throw new Error('Keine Finance-Vault-Sicherung');
   if (data.version === 2) {
@@ -213,8 +212,27 @@ export async function importBackup(text, { password = '', pin = '' } = {}) {
   const entries = Object.entries(E).filter(([k]) => k !== GUARD).map(([k, v]) => [k, v && v.ct ? { ...v, ct: unb64(v.ct).buffer } : v]);
   const vault = entries.find(([k]) => k === 'vault')[1];
   const key = await deriveKey(pin, unb64(E.meta.salt), iterOf(E.meta));
-  try { await decryptBytes(vault, key); } catch (e) { throw new Error('PIN des Backups falsch'); }
-  await idbWriteAll(entries, true);
+  let plain; try { plain = await decryptBytes(vault, key); } catch (e) { throw new Error('PIN des Backups falsch'); }
+  return { entries, key, plain, exported: data.exported };
+}
+
+// Backup-Test: alles entschlüsseln (Daten + jede Datei), nichts schreiben
+export async function verifyBackup(text, { password = '', pin = '' } = {}) {
+  const b = await openBackupFile(text, password, pin);
+  const st = JSON.parse(dec.decode(b.plain));
+  let files = 0;
+  for (const [k, v] of b.entries) {
+    if (!String(k).startsWith('file:')) continue;
+    try { await decryptBytes(v, b.key); files++; } catch (e) { throw new Error(`Datei im Backup beschädigt (${files + 1}.)`); }
+  }
+  return { tx: (st.transactions || []).length, invoices: (st.invoices || []).length, docs: (st.documents || []).length, files, exported: b.exported };
+}
+
+// Prüft Backup-Passwort UND PIN des Backups, bevor irgendetwas ersetzt wird.
+// Danach wird alles in einer einzigen Transaktion ersetzt.
+export async function importBackup(text, { password = '', pin = '' } = {}) {
+  const b = await openBackupFile(text, password, pin);
+  await idbWriteAll(b.entries, true);
   KEY = null;
 }
 export async function wipeAll() { await idbWriteAll([], true); KEY = null; }

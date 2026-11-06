@@ -9,12 +9,12 @@
 // VERSION bei jedem Release erhöhen (dann wird der Offline-Cache sauber neu
 // aufgebaut). Updates kommen aber auch ohne Erhöhung an.
 // =====================================================================
-const VERSION = 'fv-v2.8.0';
+const VERSION = 'fv-v2.9.0';
 const VENDOR = 'fv-vendor-v1';
 const FILES = ['./', './index.html', './manifest.webmanifest', './css/style.css',
   './js/app.js', './js/version.js', './js/vault.js', './js/store.js', './js/calc.js', './js/prices.js', './js/importer.js', './js/bingx.js',
   './js/ui.js', './js/views-main.js', './js/views-more.js', './js/views-docs.js', './js/scan.js', './js/scanui.js', './js/ledger.js',
-  './js/taxpack.js', './js/libs.js', './js/server.js', './js/estimate.js', './js/charts.js', './js/auto.js', './js/taxcal.js', './js/taxdocs.js',
+  './js/taxpack.js', './js/libs.js', './js/server.js', './js/estimate.js', './js/charts.js', './js/auto.js', './js/taxcal.js', './js/taxdocs.js', './js/health.js', './js/perf.js', './js/views-analyse.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => e.waitUntil((async () => {

@@ -88,6 +88,8 @@ export function area(pts, opts = {}) {
   const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
   let lo = Math.min(...pts.map((p) => p.v)), hi = Math.max(...pts.map((p) => p.v));
   if (opts.ref && Number.isFinite(opts.ref.v)) { lo = Math.min(lo, opts.ref.v); hi = Math.max(hi, opts.ref.v); }
+  const baseS = (opts.base || []).filter((p) => Number.isFinite(p.v));
+  if (baseS.length) { lo = Math.min(lo, ...baseS.map((p) => p.v)); hi = Math.max(hi, ...baseS.map((p) => p.v)); }
   const span = hi - lo || Math.abs(hi) || 1; lo -= span * 0.08; hi += span * 0.08;
   const X = (t) => ((t - t0) / ((t1 - t0) || 1)) * (W - 8) + 4;
   const Y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
@@ -95,7 +97,9 @@ export function area(pts, opts = {}) {
   const line = monotone(P);
   const base = H - padB;
   const id = nid(); const gid = 'g' + id;
-  reg.set(id, { pts, X, Y, fmt: opts.fmt || fmtDef, dateFmt: opts.dateFmt, H, color });
+  reg.set(id, { pts, X, Y, fmt: opts.fmt || fmtDef, dateFmt: opts.dateFmt, H, color, base: baseS, baseLabel: opts.baseLabel || '' });
+  const baseColor = opts.baseColor || SLOTS[1];
+  const basePath = baseS.length > 1 ? `<path d="${monotone(baseS.map((p) => [X(p.t), Y(p.v)]))}" fill="none" stroke="${baseColor}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>` : '';
   const last = P[P.length - 1]; const maxI = pts.reduce((b, p, i) => (p.v > pts[b].v ? i : b), 0);
   const long = t1 - t0 > 180 * 864e5;
   const df = opts.dateFmt || ((t) => new Date(t).toLocaleDateString('de-CH', long ? { month: 'short', year: '2-digit' } : { day: '2-digit', month: 'short' }));
@@ -108,6 +112,7 @@ export function area(pts, opts = {}) {
       <line x1="4" x2="${W - 4}" y1="${base}" y2="${base}" class="grid"/>
       <path d="${line}L${last[0].toFixed(1)},${base}L${P[0][0].toFixed(1)},${base}Z" fill="url(#${gid})"/>
       ${ref}
+      ${basePath}
       <path d="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
       <line class="xh" x1="0" x2="0" y1="${padT - 6}" y2="${base}" visibility="hidden"/>
     </svg>
@@ -169,6 +174,10 @@ function crosshair(el, clientX) {
   const v = document.createElement('b'); v.textContent = d.fmt(p.v);
   const t = document.createElement('span'); t.className = 'mut small'; t.textContent = new Date(p.t).toLocaleDateString('de-CH', { day: '2-digit', month: 'short', year: 'numeric' });
   // Wie in Finanz-Apps: der berührte Wert ersetzt oben die Kopfzahl (nichts wird verdeckt)
+  if (d.base && d.base.length) {
+    let bb = d.base[0]; for (const q of d.base) if (Math.abs(q.t - p.t) < Math.abs(bb.t - p.t)) bb = q;
+    t.textContent += ` · ${d.baseLabel || 'Basis'} ${d.fmt(bb.v)}`;
+  }
   const head = el.closest('.card')?.querySelector('.trend-h');
   if (head) {
     if (!head.dataset.saved) { head.dataset.saved = '1'; head._orig = [...head.childNodes].map((n) => n.cloneNode(true)); }

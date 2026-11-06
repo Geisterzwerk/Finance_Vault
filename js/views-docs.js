@@ -11,6 +11,7 @@ import { reconcile, autoResolve } from './auto.js';
 import * as SRV from './server.js';
 import { esc, chf, qty, dmy, ago, bar, icon, openSheet, closeSheet, closeAll, toast, download, chips, chipVal } from './ui.js';
 import { openScanner } from './scanui.js';
+import { fmtRef } from './scan.js';
 
 export { openScanner };
 const CATS = ['Einkommen', 'Vorsorge', 'Vermögen', 'Steuern', 'Studium', 'Gesundheit', 'Spenden', 'Mobilität', 'Versicherung', 'Kommunikation', 'Wohnen', 'Abos', 'Sonstiges'];
@@ -20,7 +21,7 @@ const yearNow = () => new Date().getFullYear();
 export function openResult(d, inboxDoc = null) {
   const capture = (el) => {
     const v = (n) => el.querySelector(`[name=${n}]`)?.value ?? '';
-    Object.assign(d, { issuer: v('issuer'), title: v('title'), number: v('number'), amount: v('amount'), due: v('due'), date: v('date'), category: v('category'),
+    Object.assign(d, { issuer: v('issuer'), title: v('title'), number: v('number'), reference: v('reference').replace(/\s+/g, ''), amount: v('amount'), due: v('due'), date: v('date'), category: v('category'),
       ziffer: v('ziffer'), taxKind: v('taxKind'), taxYear: v('taxYear'), year: v('year'), tax: chipVal(el, 'tax') || d.tax, kind: chipVal(el, 'kind') || d.kind });
   };
   openSheet({
@@ -32,14 +33,17 @@ export function openResult(d, inboxDoc = null) {
       <label class="field"><span>Absender / Aussteller</span><input name="issuer" value="${esc(d.issuer)}"></label>
       <div class="grid2">
         <label class="field"><span>Bezeichnung</span><input name="title" value="${esc(d.title)}"></label>
-        <label class="field"><span>Nummer / Referenz</span><input name="number" value="${esc(d.number)}"></label>
+        <label class="field"><span>Rechnungsnummer</span><input name="number" value="${esc(d.number)}"></label>
         <label class="field"><span>Betrag CHF</span><input name="amount" inputmode="decimal" value="${esc(d.amount)}"></label>
         <label class="field"><span>Fällig am</span><input name="due" type="date" value="${esc(d.due)}"></label>
         <label class="field"><span>Dokumentdatum</span><input name="date" type="date" value="${esc(d.date)}"></label>
         <label class="field"><span>Steuerjahr</span><input name="year" inputmode="numeric" value="${esc(d.year)}"></label>
       </div>
+      <label class="field"><span>Zahlungsreferenz${d.qr ? ' (aus QR-Code)' : ''}</span><input name="reference" value="${esc(fmtRef(d.reference))}" autocomplete="off" spellcheck="false"></label>
+      ${d.iban ? `<div class="small mut">IBAN ${esc(d.iban)}${d.customerRef ? ' · Kundennr. ' + esc(d.customerRef) : ''}</div>` : ''}
       <label class="field"><span>Kategorie</span><select name="category">${CATS.map((c) => `<option ${c === d.category ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
       <div class="lbl">Steuer</div>${chips('tax', [['no', 'nicht relevant'], ['maybe', 'möglicherweise'], ['yes', 'steuerrelevant']], d.tax)}
+      <div class="small mut">Steuerrelevante Rechnungen erscheinen zusätzlich unter Dokumente und in der Steuermappe.</div>
       <label class="field"><span>E-Tax-Ziffer</span><input name="ziffer" value="${esc(d.ziffer)}" inputmode="numeric"></label>
       <div class="grid2"><label class="field"><span>Steuerart (bei Steuerrechnung)</span><select name="taxKind"><option value="">–</option>${TP.TAX_KINDS.map((k) => `<option ${k === d.taxKind ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
         <label class="field"><span>Für Steuerjahr</span><input name="taxYear" inputmode="numeric" value="${esc(d.taxYear)}"></label></div>
@@ -93,7 +97,9 @@ export function inboxPage() {
 
 export function documentsPage() {
   const s = S(); const q = ui.docSearch.toLowerCase();
-  const docs = s.documents.filter((d) => d.status !== 'inbox' && (!q || `${d.title} ${d.issuer} ${d.category} ${d.text || ''} ${d.year}`.toLowerCase().includes(q)));
+  // Steuerrelevante (oder möglicherweise relevante) Rechnungen erscheinen ebenfalls hier
+  const invDocs = s.invoices.filter((i) => i.tax && i.tax !== 'no' && i.category !== 'Steuern').map((i) => ({ id: 'inv:' + i.id, inv: i.id, title: i.title || i.issuer, issuer: i.issuer, category: i.category, ziffer: i.ziffer, amount: i.amount, tax: i.tax, year: new Date(i.paidAt || i.due || i.created).getFullYear(), file: i.file, isInvoice: true }));
+  const docs = [...s.documents.filter((d) => d.status !== 'inbox'), ...invDocs].filter((d) => !q || `${d.title} ${d.issuer} ${d.category} ${d.text || ''} ${d.year}`.toLowerCase().includes(q));
   const years = [...new Set(docs.map((d) => d.year))].sort((a, b) => b - a);
   const KL = { erklaerung: 'Steuererklärung', veranlagung: 'Veranlagung' };
   return {
@@ -101,7 +107,7 @@ export function documentsPage() {
     html: `<input class="search" data-search placeholder="Suchen (auch im erkannten Text) …" value="${esc(ui.docSearch)}">
       <button class="btn gold block" data-act="scan">📷 Dokument scannen / hochladen</button>
       ${years.map((y) => `<div class="lbl mt">${y}</div>${docs.filter((d) => d.year === y).map((d) => `<div class="card row clickable" data-doc="${d.id}">
-        ${d.tax === 'yes' ? icon('ok') : d.tax === 'maybe' ? icon('warn') : '<span class="ic empty"></span>'}<div class="grow"><b>${esc(KL[d.kind] || d.title || d.issuer || 'Dokument')}</b>
+        ${d.tax === 'yes' ? icon('ok') : d.tax === 'maybe' ? icon('warn') : '<span class="ic empty"></span>'}<div class="grow"><b>${esc(KL[d.kind] || d.title || d.issuer || 'Dokument')}</b>${d.isInvoice ? ' <span class="tag">Rechnung</span>' : ''}
         <div class="small mut">${esc(d.category || '')}${d.ziffer ? ' · Ziffer ' + esc(d.ziffer) : ''}${d.amount ? ' · ' + chf(+d.amount, 2) : ''}</div></div><span class="gold">›</span></div>`).join('')}`).join('') || '<div class="card small mut mt">Noch keine Dokumente</div>'}
       <div class="small mut mt">Rechnungen findest du unter Rechnungen. Belege dort zählen ebenfalls für die Steuer.</div>`,
     bind: (el) => {
@@ -109,7 +115,9 @@ export function documentsPage() {
       sI.addEventListener('input', () => { ui.docSearch = sI.value; dispatchEvent(new Event('rerender')); const n = document.querySelector('[data-search]'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); });
       el.addEventListener('click', (e) => {
         if (e.target.closest('[data-act=scan]')) return openScanner();
-        const c = e.target.closest('[data-doc]'); if (c) openDoc(S().documents.find((x) => x.id === c.dataset.doc));
+        const c = e.target.closest('[data-doc]'); if (!c) return;
+        if (c.dataset.doc.startsWith('inv:')) { const inv = S().invoices.find((x) => x.id === c.dataset.doc.slice(4)); if (inv) import('./views-more.js').then((m) => m.openInvoice(inv)); return; }
+        openDoc(S().documents.find((x) => x.id === c.dataset.doc));
       });
     },
   };

@@ -8,6 +8,8 @@ import { closingDue } from './taxpack.js';
 import { openEstimate, missingOpenings } from './estimate.js';
 import { ring, legend, area, progress, lastId, SLOTS, OTHER, gc } from './charts.js';
 import { reconcile } from './auto.js';
+import * as HEALTH from './health.js';
+import { fiCalc } from './perf.js';
 import { calendar as taxCalendar } from './taxcal.js';
 import { mappe as taxMappe, progressOf } from './taxdocs.js';
 import { loadHistory } from './prices.js';
@@ -121,6 +123,9 @@ export function dashboard() {
       ${legend(segs, Math.max(1, segs.reduce((a, x) => a + x.value, 0)), (v) => chf(v), lastId())}
       ${nw.liability ? `<div class="small mut mt">Verbindlichkeiten ${chf(-nw.liability)} sind im Nettovermögen abgezogen.</div>` : ''}
     </div>
+    ${(() => { const sc = HEALTH.score(); const f = fiCalc(); return `<div class="grid2">
+      <div class="card clickable row" data-go="#/analyse/health">${progress(sc / 100, sc >= 80 ? SLOTS[2] : sc >= 50 ? SLOTS[0] : SLOTS[3], 46)}<div class="grow"><div class="lbl nowrap">Health</div><div class="small mut">${sc >= 80 ? 'alles im Griff' : 'Punkte offen'}</div></div></div>
+      <div class="card clickable row" data-go="#/analyse/fi">${progress(f.progress, SLOTS[2], 46)}<div class="grow"><div class="lbl nowrap">FI-Ziel</div><div class="small mut">${f.months != null ? Math.ceil(f.months / 12) + ' Jahre' : '–'}</div></div></div></div>`; })()}
     ${autoCard()}
     ${trendCard('net', 'Verlauf Nettovermögen')}
     ${goalCard(g1)}
@@ -343,6 +348,7 @@ export function openAccount(a = null) {
       <label class="field"><span>Name</span><input name="name" value="${esc(d.name)}" placeholder="z. B. Raiffeisen Privat"></label>
       <div class="lbl">Art</div>${chips('kind', Object.entries(ACCOUNT_KINDS).map(([k, v]) => [k, v.l]), d.kind)}
       <label class="field"><span>Aktueller Stand CHF${(d.positions || []).length ? ' (automatisch aus Positionen)' : ''}</span><input name="value" inputmode="decimal" value="${esc(d.value)}"></label>
+      <label class="field" data-contrib ${['securities', 'pillar3a'].includes(d.kind) ? '' : 'hidden'}><span>davon Einzahlung seit letztem Stand (CHF, optional)</span><input name="contrib" inputmode="decimal" placeholder="z. B. 7258 bei 3a"></label>
       <div data-only-kind="securities" ${d.kind === 'securities' ? '' : 'hidden'}>
         <label class="field"><span>Positionen (optional) – Ticker und Stückzahl, z. B. VWRL.SW 12; NESN.SW 5</span><input name="pos" autocapitalize="characters" autocomplete="off" spellcheck="false" value="${esc((d.positions || []).map((p) => p.ticker + ' ' + p.qty).join('; '))}" placeholder="VWRL.SW 12; CHSPI.SW 3"></label>
         <div class="small mut">Mit Positionen bewertet dein Server das Depot täglich automatisch (Kurse von Yahoo Finance, Ticker wie dort, Schweizer Börse mit «.SW»). VIAC- oder Fonds-Portfolios ohne Ticker bitte weiter von Hand nachführen.</div>
@@ -352,7 +358,7 @@ export function openAccount(a = null) {
       ${a && a.history && a.history.length ? `<div class="lbl mt">Verlauf</div>${a.history.slice(-6).reverse().map((h) => `<div class="txr"><span class="grow small mut">${dmy(h.at)}</span><b>${chf(h.value)}</b></div>`).join('')}` : ''}
       <button class="btn gold block big mt" data-act="save">Speichern</button>
       ${a ? '<button class="btn danger block" data-act="del">Löschen</button>' : ''}`,
-    bind: (el) => { bindChips(el, 'kind', (k) => { el.querySelector('[data-only-kind]').hidden = k !== 'securities'; }); el.addEventListener('click', (e) => {
+    bind: (el) => { bindChips(el, 'kind', (k) => { el.querySelector('[data-only-kind]').hidden = k !== 'securities'; el.querySelector('[data-contrib]').hidden = !['securities', 'pillar3a'].includes(k); }); el.addEventListener('click', (e) => {
       const b = e.target.closest('[data-act]'); if (!b) return; const s = S();
       if (b.dataset.act === 'del') { if (confirm('Konto löschen?')) { s.accounts = s.accounts.filter((q) => q.id !== a.id); s.goals = s.goals.filter((g) => !(g.kind === 'account' && g.accountId === a.id)); commit(); closeSheet(); } return; }
       const name = el.querySelector('[name=name]').value.trim(); if (!name) return toast('Name fehlt');
@@ -368,9 +374,12 @@ export function openAccount(a = null) {
         }
       }
       o.positions = positions;
+      const contrib = toNum(el.querySelector('[name=contrib]').value);
+      if (Number.isNaN(contrib)) return toast('Einzahlung ungültig');
       if (a) {
         if (a.value !== value) { a.history = [...(a.history || []), { at: a.updated, value: a.value }]; a.updated = new Date().toISOString(); }
         Object.assign(a, o);
+        if (contrib) a.contribs = [...(a.contribs || []), { at: new Date().toISOString(), amount: contrib }];
       } else s.accounts.push({ id: uid(), ...o, updated: new Date().toISOString(), history: [] });
       if (o.tag === 'notgroschen' && !s.goals.some((g) => g.kind === 'account')) {
         const acc = s.accounts.find((q) => q.tag === 'notgroschen'); if (acc)

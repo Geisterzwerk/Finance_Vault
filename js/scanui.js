@@ -141,12 +141,13 @@ export function openScanner() {
     const f = SC.extractFields(text); const cls = SC.classify(text, qr);
     const year = new Date().getFullYear();
     const draft = {
-      kind: cls.kind, issuer: (qr && qr.creditor) || f.issuer || '', title: cls.title || '', number: f.number || '',
-      amount: qr && qr.amount != null ? qr.amount : f.amount ?? '', due: f.due || '', date: f.date || isoDay(new Date()),
+      kind: cls.kind, issuer: (qr && qr.creditor) || f.issuer || '', title: cls.title || (qr && qr.message ? qr.message.slice(0, 60) : ''), number: (qr && qr.invoiceNo) || f.number || '',
+      amount: qr && qr.amount != null ? qr.amount : f.amount ?? '',
+      due: f.due || (qr && qr.invoiceDate && qr.payDays != null ? new Date(Date.parse(qr.invoiceDate) + qr.payDays * 864e5).toISOString().slice(0, 10) : ''), date: (qr && qr.invoiceDate) || f.date || isoDay(new Date()),
       category: cls.category, tax: cls.tax, ziffer: cls.ziffer, taxKind: cls.taxKind || '', taxStage: cls.taxStage || '',
       // Ohne Jahr im Text: provisorische Staats-/Gemeinderechnung gilt fürs laufende Jahr, Bundessteuer fürs Vorjahr
       taxYear: SC.guessTaxYear(text) || (cls.taxStage === 'provisorisch' && cls.taxKind !== 'Bund' ? year : year - 1),
-      year: SC.guessTaxYear(text) || new Date(f.date || Date.now()).getFullYear(), iban: qr ? qr.iban : '', reference: qr ? qr.reference : '',
+      year: SC.guessTaxYear(text) || new Date(f.date || Date.now()).getFullYear(), iban: qr ? qr.iban : '', reference: (qr && qr.reference) || f.reference || '', customerRef: qr ? qr.customerRef || '' : '',
       text: text.slice(0, 6000), qr: !!qr,
     };
     const fid = uid(); await putFile(fid, new File([blob], name, { type: blob.type || 'application/pdf' }));

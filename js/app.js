@@ -10,9 +10,11 @@ import { refreshPrices } from './prices.js';
 import { $, esc, toast, closeAll, closeSheet, refreshSheet, sheetOpen } from './ui.js';
 import { dashboard, invest, goals, celebrate } from './views-main.js';
 import { taxes, invoices, vault, ui as taxUi } from './views-more.js';
+import { analyse } from './views-analyse.js';
+import { takeSnapshot } from './perf.js';
 
-const ROUTES = { '': dashboard, invest, ziele: goals, steuern: taxes, rechnungen: invoices, vault };
-const TAB = { '': 0, ziele: 0, invest: 1, steuern: 2, rechnungen: 3, vault: 4 };
+const ROUTES = { '': dashboard, invest, ziele: goals, steuern: taxes, rechnungen: invoices, vault, analyse };
+const TAB = { '': 0, ziele: 0, analyse: 0, invest: 1, steuern: 2, rechnungen: 3, vault: 4 };
 const route = () => { const [a, b] = location.hash.replace(/^#\/?/, '').split('/'); return { a: a || '', b }; };
 
 function render() {
@@ -26,7 +28,7 @@ function render() {
   }
   $('#title').innerHTML = page.title;
   $('#sub').innerHTML = page.sub || '';
-  $('#back').hidden = !(a === 'ziele' || (a === 'vault' && b));
+  $('#back').hidden = !(a === 'ziele' || a === 'analyse' || (a === 'vault' && b));
   const inner = document.createElement('div'); inner.className = 'page'; inner.innerHTML = page.html;
   $('#view').replaceChildren(inner);
   if (page.bind) page.bind(inner);
@@ -55,7 +57,10 @@ async function updatePrices(manual = false) {
   if (manual) toast(r.ok ? 'Kurse aktualisiert' : r.reason === 'offline' ? 'Offline – letzter Stand bleibt' : r.reason === 'busy' ? 'Kurse werden bereits geladen' : 'Kurse nicht erreichbar');
   if (isUnlocked()) milestones();
 }
+// Täglicher Vermögens-Snapshot (für die Analyse), sobald aktuelle Kurse da sind
+function snapshot() { if (isUnlocked() && takeSnapshot()) commit(true); }
 function milestones() {
+  snapshot();
   const fresh = checkMilestones();
   if (fresh.length) { commit(); setTimeout(() => celebrate(fresh), 300); }
 }

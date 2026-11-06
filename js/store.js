@@ -20,7 +20,10 @@ export const emptyState = () => ({
   coins: {},          // Symbol -> { id (CoinGecko), name, location }
   prices: {},         // Symbol -> { chf, change24h, at }
   pricesAt: null,
-  histCache: {},      // CoinGecko-Id -> { at, p: [[ms, chf], ...] } (Tageskurse, Zwischenspeicher)
+  histCache: {},
+  meta: { lastBackup: null, lastBackupTest: null },  // Backup-Zeitpunkte (Finance Health)
+  netSnaps: {},       // Tag -> Vermögens-Snapshot (Analyse)
+  fi: { expenses: 3000, swr: 3.5, ret: 4, save: 1000, excludeNotgroschen: true },      // CoinGecko-Id -> { at, p: [[ms, chf], ...] } (Tageskurse, Zwischenspeicher)
   taxYears: {},       // Jahr -> { rates, checklist, closed, snapshot, filed }
   // Steuerkalender BL: Gemeinde mit eigenem Bezug? Fälligkeit (MM-TT), Zinssätze (jährlich prüfen), Rücklagekonto
   taxSettings: { gemeindeSeparate: false, gemeindeDue: '09-30', vzStaat: 0.1, vzBund: 0, verzugStaat: 5, verzugBund: 4, ratesYear: 2026, reserveAccountId: '' },

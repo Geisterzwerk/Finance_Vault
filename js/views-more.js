@@ -17,6 +17,7 @@ import { inboxPage, documentsPage, ledgerPage, openScanner, taxExtrasHTML, bindT
 import { remindersICS, TAX_KINDS, buildPackage, reportHTML } from './taxpack.js';
 import * as TC from './taxcal.js';
 import * as TD from './taxdocs.js';
+import { fmtRef } from './scan.js';
 import { progress, SLOTS } from './charts.js';
 import * as SRV from './server.js';
 import { autoResolve } from './auto.js';
@@ -123,7 +124,7 @@ function openMappeItem(y, id) {
           <div class="small mut">Leer lassen = automatischer Wert (grau). Eigener Wert überschreibt.</div>` : ''}
         ${i.coins ? `<div class="lbl mt">Crypto-Zeilen (Code KRY)</div>${i.coins.map((c) => `<div class="txr"><b class="grow">${esc(c.asset)}</b><span class="small">${qty(c.qty)}</span><span class="small mut">${c.rate != null ? '× ' + c.rate : 'Kurs fehlt'}</span><b class="small">${c.rate != null ? chf(c.qty * c.rate) : '–'}</b></div>`).join('')}` : ''}
         <div class="lbl mt">Belege (${i.docs.length})</div>
-        ${i.docs.map((d) => `<div class="txr"><span class="grow small">${esc(d.title || d.fileName)}<div class="mut">${esc(d.fileName || '')}</div></span><button class="btn line sm" data-open="${d.id}">Öffnen</button><button class="btn danger sm" data-unlink="${d.id}">✕</button></div>`).join('') || '<div class="small mut">Noch kein Beleg.</div>'}
+        ${i.docs.map((d) => `<div class="txr"><span class="grow small">${esc(d.title || d.fileName)}<div class="mut">${esc(d.fileName || '')}</div></span><button class="btn line sm" data-open-file="${esc(d.file)}">Öffnen</button>${d.isInvoice ? '<span class="tag">Rechnung</span>' : `<button class="btn danger sm" data-unlink="${d.id}">✕</button>`}</div>`).join('') || '<div class="small mut">Noch kein Beleg.</div>'}
         <label class="btn line block">⬆ Beleg hinzufügen<input type="file" multiple accept="application/pdf,image/*" data-up-item hidden></label>
         ${unassigned.length ? `<label class="field"><span>Vorhandenes Dokument zuordnen</span><select data-assign><option value="">–</option>${unassigned.map((d) => `<option value="${d.id}">${esc(d.title || d.fileName)}</option>`).join('')}</select></label>` : ''}
         <label class="field mt"><span>Notiz</span><input name="note" value="${esc(i.state.note || '')}"></label>
@@ -136,7 +137,7 @@ function openMappeItem(y, id) {
       el.querySelector('[data-up-item]').addEventListener('change', async (e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) { await uploadMappe(fs, y, id); } });
       el.querySelector('[data-assign]')?.addEventListener('change', (e) => { const d = S().documents.find((x) => x.id === e.target.value); if (d) { d.taxItem = id; commit(); } });
       el.addEventListener('click', async (e) => {
-        const o = e.target.closest('[data-open]'); if (o) { const d = S().documents.find((x) => x.id === o.dataset.open); const u = d && await getFileURL(d.file); if (u) window.open(u, '_blank', 'noopener'); return; }
+        const o = e.target.closest('[data-open-file]'); if (o) { const u = await getFileURL(o.dataset.openFile); if (u) window.open(u, '_blank', 'noopener'); return; }
         const ul = e.target.closest('[data-unlink]'); if (ul) { const d = S().documents.find((x) => x.id === ul.dataset.unlink); if (d) { d.taxItem = null; commit(); } return; }
         const b = e.target.closest('[data-act]'); if (!b) return; const s0 = st();
         const vals = read(); if (Object.values(vals).some((x) => Number.isNaN(x))) return toast('Betrag ungültig');
@@ -349,7 +350,7 @@ export function openInvoice(inv = null, preset = null) {
   let newFile = null;
   const capture = (el) => {
     const v = (n) => el.querySelector(`[name=${n}]`)?.value ?? '';
-    Object.assign(d, { issuer: v('issuer'), title: v('title'), number: v('number'), amount: v('amount'), due: v('due'), category: v('category'), ziffer: v('ziffer'), note: v('note'), paidAt: v('paidAt') || d.paidAt, tax: chipVal(el, 'tax') || d.tax, taxKind: v('taxKind'), taxYear: v('taxYear') ? +v('taxYear') : null, taxStage: v('taxStage') });
+    Object.assign(d, { issuer: v('issuer'), title: v('title'), number: v('number'), reference: v('reference').replace(/\s+/g, ''), amount: v('amount'), due: v('due'), category: v('category'), ziffer: v('ziffer'), note: v('note'), paidAt: v('paidAt') || d.paidAt, tax: chipVal(el, 'tax') || d.tax, taxKind: v('taxKind'), taxYear: v('taxYear') ? +v('taxYear') : null, taxStage: v('taxStage') });
   };
   openSheet({
     title: inv ? inv.issuer : 'Neue Rechnung', capture,
@@ -366,6 +367,8 @@ export function openInvoice(inv = null, preset = null) {
         <label class="field"><span>Kategorie</span><input name="category" value="${esc(d.category)}" placeholder="Studium, Wohnen …" list="cats"></label>
         ${d.status === 'paid' ? `<label class="field"><span>Bezahlt am</span><input name="paidAt" type="date" value="${esc(d.paidAt)}"></label>` : '<span></span>'}
       </div>
+      <label class="field"><span>Zahlungsreferenz (QR / RF)</span><input name="reference" value="${esc(fmtRef(d.reference || ''))}" autocomplete="off" spellcheck="false" placeholder="z. B. 21 00000 00003 …"></label>
+      ${d.iban || d.reference ? `<div class="row small"><span class="grow mut">${d.iban ? 'IBAN ' + esc(d.iban) : ''}</span>${d.reference ? '<button class="btn line sm" data-act="copyref">Referenz kopieren</button>' : ''}${d.iban ? '<button class="btn line sm" data-act="copyiban">IBAN kopieren</button>' : ''}</div>` : ''}
       <datalist id="cats">${['Studium', 'Wohnen', 'Versicherung', 'Gesundheit', 'Mobilität', 'Kommunikation', 'Steuern', 'Abos', 'Sonstiges'].map((c) => `<option value="${c}">`).join('')}</datalist>
       <div class="lbl">Steuer</div>${chips('tax', [['no', 'nicht relevant'], ['maybe', 'möglicherweise'], ['yes', 'steuerrelevant']], d.tax)}
       <label class="field"><span>E-Tax-Ziffer (z. B. 650 Weiterbildung, 720 Krankheit)</span><input name="ziffer" value="${esc(d.ziffer)}" inputmode="numeric"></label>
@@ -385,6 +388,7 @@ export function openInvoice(inv = null, preset = null) {
       el.addEventListener('click', async (e) => {
         const b = e.target.closest('[data-act]'); if (!b) return; const s = S();
         capture(el);
+        if (b.dataset.act === 'copyref' || b.dataset.act === 'copyiban') { const val = b.dataset.act === 'copyref' ? d.reference : d.iban; try { await navigator.clipboard.writeText(String(val).replace(/\s+/g, '')); toast('Kopiert – im E-Banking einfügen'); } catch (e) { toast('Kopieren nicht möglich'); } return; }
         if (b.dataset.act === 'paid') { d.status = 'paid'; d.paidAt = isoDay(new Date()); rerender(); return; }
         if (b.dataset.act === 'unpaid') { d.status = 'open'; d.paidAt = ''; rerender(); return; }
         if (b.dataset.act === 'view') { const u = await getFileURL(inv.file); if (u) window.open(u, '_blank', 'noopener'); return; }
@@ -766,7 +770,7 @@ function openBackup() {
       if (p1.length < 10) return toast('Mindestens 10 Zeichen');
       if (p1 !== el.querySelector('[name=p2]').value) return toast('Passwörter stimmen nicht überein');
       b.disabled = true; b.textContent = 'Verschlüssele …';
-      try { await flush(); download(`FinanceVault_Backup_${isoDay(new Date())}.json`, await exportBackup(p1)); toast('Backup erstellt'); closeSheet(); }
+      try { await flush(); download(`FinanceVault_Backup_${isoDay(new Date())}.json`, await exportBackup(p1)); (S().meta ||= {}).lastBackup = new Date().toISOString(); commit(true); toast('Backup erstellt – tipp es in «Analyse › Health» einmal an, um es zu testen', 4500); closeSheet(); }
       catch (err) { console.error(err); toast(err.message || 'Backup fehlgeschlagen'); b.disabled = false; b.textContent = '⬇ Backup erstellen'; }
     }),
   });

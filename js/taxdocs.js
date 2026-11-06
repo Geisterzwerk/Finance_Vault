@@ -131,7 +131,10 @@ export function mappe(year) {
   const prevYear = Object.keys(s.taxYears).map(Number).filter((y) => y < year && s.taxYears[y].declared).sort((a, b) => b - a)[0];
   const prev = prevYear ? s.taxYears[prevYear].declared.values || {} : {};
   const docs = (s.documents || []).filter((d) => d.status !== 'inbox' && +d.year === +year);
-  const docsFor = (id) => docs.filter((d) => d.taxItem === id);
+  // Belege aus Rechnungen (Ziffer gesetzt, steuerrelevant) gehören automatisch zur passenden Position
+  const invDocs = s.invoices.filter((i) => i.file && i.tax !== 'no' && i.ziffer && new Date(i.paidAt || i.due || i.created).getFullYear() === +year)
+    .map((i) => ({ id: 'inv-' + i.id, title: `Rechnung ${i.issuer}`, fileName: i.fileName || `Rechnung_${i.issuer}`, file: i.file, taxItem: i.ziffer === '500' ? 'abo' : 'z' + i.ziffer, isInvoice: true }));
+  const docsFor = (id) => [...docs.filter((d) => d.taxItem === id), ...invDocs.filter((d) => d.taxItem === id)];
   const inv = (z) => s.invoices.filter((i) => String(i.ziffer) === z && i.tax !== 'no' && new Date(i.paidAt || i.due).getFullYear() === +year);
   const sumInv = (z) => inv(z).reduce((a, i) => a + (+i.amount || 0), 0);
   const items = [];

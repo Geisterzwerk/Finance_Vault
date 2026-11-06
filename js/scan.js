@@ -328,8 +328,26 @@ export function parseSwissQR(txt) {
   return {
     iban: L[3] || '', creditor: L[5] || '', town: [L[8], L[9]].filter(Boolean).join(' '),
     amount: Number.isFinite(amount) ? amount : null, currency: L[19] || 'CHF',
-    reference: L[28] || '', message: L[29] || '', billInfo: L[31] || '',
+    refType: L[27] || '', reference: (L[28] || '').replace(/\s+/g, ''), message: L[29] || '', billInfo: L[31] || '',
+    ...parseS1(L[31] || ''),
   };
+}
+// Strukturierte Rechnungsinformation «//S1/…» (Swico): 10 = Rechnungsnummer, 11 = Rechnungsdatum (JJMMTT),
+// 20 = Kundenreferenz, 30 = MWST-Nummer, 40 = Zahlungsbedingungen (z. B. 0:30 = 30 Tage)
+export function parseS1(info) {
+  if (!/^\/\/S1\//.test(info || '')) return {};
+  const parts = info.slice(5).split(/(?<!\\)\//); const o = {};
+  for (let i = 0; i + 1 < parts.length; i += 2) o[parts[i]] = parts[i + 1].replace(/\\\//g, '/');
+  const d = /^(\d{2})(\d{2})(\d{2})/.exec(o['11'] || '');
+  const days = /(?:^|;)0:(\d{1,3})/.exec(o['40'] || '');
+  return { invoiceNo: o['10'] || '', invoiceDate: d ? `20${d[1]}-${d[2]}-${d[3]}` : '', customerRef: o['20'] || '', payDays: days ? +days[1] : null };
+}
+// Zahlungsreferenz lesbar: QR-Referenz (27 Ziffern) in 5er-Gruppen, Creditor Reference (RF…) in 4er-Gruppen
+export function fmtRef(r) {
+  r = String(r || '').replace(/\s+/g, '');
+  if (/^\d{27}$/.test(r)) return r.slice(0, 2) + ' ' + r.slice(2).replace(/(\d{5})(?=\d)/g, '$1 ');
+  if (/^RF/i.test(r)) return r.replace(/(.{4})(?=.)/g, '$1 ');
+  return r;
 }
 
 // ---------- Texterkennung ----------
@@ -362,8 +380,12 @@ export function extractFields(text) {
   }
   if (all.length) f.date = all[0];
   if (!f.due && f.date) { const dd = /(\d{1,3})\s*tag/i.exec(t); if (dd && /zahlbar|innert|innerhalb/i.test(t)) { const x = new Date(f.date); x.setDate(x.getDate() + +dd[1]); f.due = x.toISOString().slice(0, 10); } }
-  const nr = /(rechnungs?[\s-]*(?:nr|nummer)|rechnung\s*nr|beleg[\s-]*nr|referenz)[.:\s#]*([A-Z0-9][A-Z0-9\-\/.]{3,})/i.exec(t);
-  if (nr) f.number = nr[2];
+  // Rechnungsnummer: viele Schreibweisen (Rechnungs-Nr., Rech.-Nr., Faktura, Invoice No., Belegnummer …)
+  const nr = /(?:rechnungs?[\s.-]*(?:nr|nummer|no)|rech\.?\s*-?\s*nr|faktura[\s-]*(?:nr|nummer)?|invoice\s*(?:no|number|nr)|beleg[\s-]*(?:nr|nummer)|dokument[\s-]*nr|rg\.?[\s-]*nr)\.?\s*[:#]?\s*([A-Z0-9][A-Z0-9\-\/.]{2,})/i.exec(t);
+  if (nr && /\d/.test(nr[1])) f.number = nr[1].replace(/[.]$/, '');
+  // Zahlungsreferenz aus dem Text (falls kein QR lesbar): 27-stellige QR-Referenz oder RF-Referenz
+  const qrr = /\b(\d{2}(?:\s?\d{5}){5})\b/.exec(t) || /\b(RF\d{2}(?:\s?[A-Z0-9]{1,4}){1,6})\b/i.exec(t);
+  if (qrr) f.reference = qrr[1].replace(/\s+/g, '');
   const issuer = lines.find((l) => /[A-Za-zÄÖÜäöü]{3,}/.test(l) && l.length < 60 && !/rechnung|seite|datum|herr|frau/i.test(l));
   if (issuer) f.issuer = issuer.replace(/[|_]+/g, '').trim();
   return f;
