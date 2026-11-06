@@ -20,6 +20,7 @@ export const emptyState = () => ({
   coins: {},          // Symbol -> { id (CoinGecko), name, location }
   prices: {},         // Symbol -> { chf, change24h, at }
   pricesAt: null,
+  histCache: {},      // CoinGecko-Id -> { at, p: [[ms, chf], ...] } (Tageskurse, Zwischenspeicher)
   taxYears: {},       // Jahr -> { rates, checklist, closed, snapshot }
   // ignoredAssets: ausgeblendete Coins (Demo, Scam, Staub) – zählen nirgends mit. VST = BingX-Demo-Guthaben.
   settings: { name: 'Jorick', cgKey: '', defaultWallet: 'Ledger', autoLockMin: 5, canton: 'Basel-Landschaft', ignoredAssets: ['VST'] },

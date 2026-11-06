@@ -30,7 +30,7 @@ export function coinId(sym) { const c = S().coins[sym]; return (c && c.id) || KN
 export async function resolveId(sym) {
   if (coinId(sym)) return coinId(sym);
   try {
-    const j = await (await fetch(url('/search', { query: sym }))).json();
+    const j = await getJSON(url('/search', { query: sym }));
     const hit = (j.coins || []).find((c) => c.symbol.toUpperCase() === sym.toUpperCase());
     // auto: nur per Symbol gefunden – kann ein Namensvetter sein. Bis zur Bestätigung im
     // Coin-Detail zählt der Coin nicht für Meilensteine.
@@ -49,7 +49,7 @@ export async function refreshPrices(symbols) {
     for (const s of syms) if (!coinId(s)) await resolveId(s);
     const ids = [...new Set(syms.map(coinId).filter(Boolean))];
     if (!ids.length) return { ok: true };
-    const r = await fetch(url('/simple/price', { ids: ids.join(','), vs_currencies: 'chf', include_24hr_change: 'true' }));
+    const r = await cgFetch(url('/simple/price', { ids: ids.join(','), vs_currencies: 'chf', include_24hr_change: 'true' }));
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     const now = new Date().toISOString();
@@ -64,22 +64,55 @@ export async function refreshPrices(symbols) {
 }
 
 // ---------- Historische Kurse ----------
+// CoinGecko gratis erlaubt nur wenige Abfragen pro Minute (ohne Schlüssel ca. 5–10,
+// mit kostenlosem Demo-Schlüssel 30). Darum:
+//  · alle CoinGecko-Abfragen laufen nacheinander mit Mindestabstand (Warteschlange)
+//  · bei «429 Too Many Requests» wird gewartet (Retry-After bzw. 20/40/60 s)
+//  · geladene Tagesreihen werden im (verschlüsselten) Vault zwischengespeichert,
+//    damit ein zweiter Versuch nur noch Fehlendes holt.
 const series = {};   // id -> Promise<[[ms, chf], ...]>
 const single = {};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const notifyWait = (sec) => dispatchEvent(new CustomEvent('cgwait', { detail: { sec } }));
 
-async function getJSON(u, tries = 0) {
-  const r = await fetch(u);
-  if (r.status === 429 && tries < 4) { await sleep(4000 * (tries + 1)); return getJSON(u, tries + 1); }
+let queue = Promise.resolve(); let lastCall = 0;
+function cgFetch(u) {
+  const run = async () => {
+    const gap = S().settings.cgKey ? 2200 : 7000;
+    const wait = lastCall + gap - Date.now();
+    if (wait > 0) await sleep(wait);
+    for (let tries = 0; ; tries++) {
+      lastCall = Date.now();
+      const r = await fetch(u);
+      if (r.status !== 429 || tries >= 3) return r;
+      const ra = Number(r.headers.get('retry-after'));
+      const sec = Number.isFinite(ra) && ra > 0 && ra <= 120 ? ra : 20 * (tries + 1);
+      notifyWait(sec); await sleep(sec * 1000);
+    }
+  };
+  const p = queue.then(run, run); queue = p.catch(() => {}); return p;
+}
+
+async function getJSON(u) {
+  const r = u.startsWith(API) ? await cgFetch(u) : await fetch(u);
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
 
 // Tagesreihe der letzten 365 Tage (kostenloser Zugang erlaubt max. 365 Tage)
-function dailySeries(id) {
+const cache = () => (S().histCache ||= {});
+function dailySeries(id, t) {
+  const c = cache()[id];
+  // Zwischenspeicher gilt, wenn er jünger als 12 h ist oder das Datum klar vor dem Abruf liegt
+  if (c && (Date.now() - c.at < 12 * 36e5 || t < c.at - 864e5)) return Promise.resolve(c.p);
   if (!series[id]) {
     series[id] = getJSON(url(`/coins/${id}/market_chart`, { vs_currency: 'chf', days: '365', interval: 'daily' }))
-      .then((j) => j.prices || []).catch(() => { delete series[id]; return []; });
+      .then((j) => {
+        const p = (j.prices || []).map(([ms, v]) => [ms, +Number(v).toPrecision(8)]);
+        if (p.length) { cache()[id] = { at: Date.now(), p }; commit(true); }
+        return p;
+      }).catch(() => (c ? c.p : []))
+      .finally(() => { delete series[id]; });
   }
   return series[id];
 }
@@ -113,7 +146,7 @@ export async function historicalCHF(sym, date) {
   if (!id) return null;
   const t = new Date(date).getTime();
   if (Date.now() - t < 364 * 864e5) {
-    const arr = await dailySeries(id);
+    const arr = await dailySeries(id, t);
     if (arr.length) {
       let best = null, bd = Infinity;
       for (const [ms, v] of arr) { const d = Math.abs(ms - t); if (d < bd) { bd = d; best = v; } }
@@ -126,7 +159,8 @@ export async function historicalCHF(sym, date) {
   const key = id + ds;
   if (!(key in single)) {
     single[key] = getJSON(url(`/coins/${id}/history`, { date: ds, localization: 'false' }))
-      .then((j) => (j.market_data && j.market_data.current_price ? j.market_data.current_price.chf : null)).catch(() => null);
+      .then((j) => (j.market_data && j.market_data.current_price ? j.market_data.current_price.chf : null)).catch(() => null)
+      .then((v) => { if (v == null) delete single[key]; return v; });
   }
   return single[key];
 }

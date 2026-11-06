@@ -44,7 +44,9 @@ export function openEstimate() {
         <div class="small mut">Für ${L.length} Buchung${L.length > 1 ? 'en' : ''} fehlt der Kaufpreis, weil der Kauf nicht im Export steht. Du kannst ihn schätzen lassen – das Ergebnis wird überall mit <b class="amber">≈ geschätzt</b> markiert und lässt sich jederzeit pro Transaktion korrigieren.</div>
         <div class="card mt">${L.map((t) => `<div class="txr"><b class="grow">${esc(t.asset)}<div class="small mut">${qty(t.amount)} · aufgetaucht ${dmy(t.date)}</div></b>
           <span class="small">${v ? (v[t.id] != null ? chf(v[t.id], 2) : '<span class="amber">kein Kurs</span>') : ''}</span></div>`).join('')}</div>
-        ${!v ? `<button class="btn gold block big" data-act="load" ${st.busy ? 'disabled' : ''}>${st.busy ? 'Lade historische Kurse …' : 'Historische Kurse laden'}</button><div class="small mut" data-prog></div>` : `
+        ${!v || missingV ? `<button class="btn ${v ? 'line' : 'gold'} block big" data-act="load" ${st.busy ? 'disabled' : ''}>${st.busy ? 'Lade historische Kurse …' : v ? `Fehlende ${missingV} erneut laden` : 'Historische Kurse laden'}</button><div class="small mut" data-prog></div>
+          ${!S().settings.cgKey ? '<div class="small mut">CoinGecko erlaubt ohne Schlüssel nur wenige Abfragen pro Minute – das Laden dauert darum etwas. Mit einem kostenlosen Demo-Schlüssel (Einstellungen) geht es schneller.</div>' : ''}` : ''}
+        ${!v ? '' : `
           <div class="card"><div class="row"><span class="grow small">Wert am Tag des Auftauchens</span><b>${chf(sumDay, 2)}</b></div>
             ${st.stableChf ? `<div class="row"><span class="grow small">Stablecoins ohne Gegenbuchung (echt bezahlt)</span><b>${chf(st.stableChf, 2)}</b></div>` : ''}
             ${missingV ? `<div class="small amber mt">${missingV} ohne Kurs bleiben offen.</div>` : ''}</div>
@@ -60,12 +62,18 @@ export function openEstimate() {
       if (b.dataset.act === 'load') {
         if (!navigator.onLine) return toast('Offline – Kurse nicht erreichbar');
         st.busy = true; b.disabled = true; b.textContent = 'Lade historische Kurse …';
-        const prog = el.querySelector('[data-prog]'); const values = {};
-        for (let i = 0; i < L.length; i++) {
-          prog.textContent = `${i + 1} / ${L.length} · ${L[i].asset}`;
-          const r = await historicalCHF(L[i].asset, L[i].date).catch(() => null);
-          values[L[i].id] = r != null ? +(r * L[i].amount).toFixed(2) : null;
-        }
+        const prog = el.querySelector('[data-prog]'); const values = { ...(st.values || {}) };
+        let cur = '';
+        const onWait = (ev) => { prog.textContent = `CoinGecko-Limit erreicht – warte ${ev.detail.sec} s … (${cur})`; };
+        addEventListener('cgwait', onWait);
+        try {
+          const todo = L.filter((t) => values[t.id] == null);
+          for (let i = 0; i < todo.length; i++) {
+            cur = `${i + 1} / ${todo.length} · ${todo[i].asset}`; prog.textContent = cur;
+            const r = await historicalCHF(todo[i].asset, todo[i].date).catch(() => null);
+            values[todo[i].id] = r != null ? +(r * todo[i].amount).toFixed(2) : null;
+          }
+        } finally { removeEventListener('cgwait', onWait); }
         let stable = 0;
         for (const t of unmatchedStable()) {
           let c = t.chf; if (c == null) { const r = await historicalCHF(t.asset, t.date).catch(() => null); c = r != null ? r * t.amount : null; }
