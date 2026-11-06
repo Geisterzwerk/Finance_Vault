@@ -47,7 +47,7 @@ function healthGo(go) {
   if (go === 'refresh') { dispatchEvent(new Event('refreshprices')); return; }
   location.hash = go;
 }
-function openBackupTest(text) {
+export function openBackupTest(text) {
   let info; try { info = backupInfo(text); } catch (e) { return toast(e.message); }
   openSheet({
     title: 'Backup testen',

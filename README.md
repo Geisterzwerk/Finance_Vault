@@ -30,6 +30,7 @@ finance-vault/
     ├── taxpack.js         Jahresabschluss, Steuerpaket, Prüfung Steuererklärung
     ├── scan.js, scanui.js Dokumentscanner, OCR, QR-Rechnung, PDF
     ├── server.js          Anbindung an den eigenen Server
+    ├── backup.js          Automatisches Server-Backup, Wiederherstellung auf neuem Gerät
     ├── libs.js            Lädt die Bibliotheken aus vendor/
     ├── ui.js              Formatierung, Sheets, Auswahlknöpfe, Konfetti
     ├── views-main.js      Übersicht, Invest, Coin-Detail, Konten, Ziele

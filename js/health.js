@@ -20,8 +20,15 @@ export function checks() {
   const s = S(); const m = meta(); const out = [];
   const add = (id, label, st, detail, go, weight = 1) => out.push({ id, label, st, detail, go, weight });
   // Sicherheit / Zuverlässigkeit
-  const b = age(m.lastBackup);
-  add('backup', 'Backup', b <= 31 ? 'ok' : b <= 90 ? 'warn' : 'bad', `letztes Backup ${fmtAge(b)}${b > 31 ? ' – monatlich empfohlen' : ''}`, 'backup', 2);
+  const ab = s.autoBackup || {};
+  const sb = age(ab.enabled ? ab.lastAt : null);
+  const b = Math.min(age(m.lastBackup), sb);
+  add('backup', 'Backup', b <= 31 ? 'ok' : b <= 90 ? 'warn' : 'bad', `letztes Backup ${fmtAge(b)}${sb === b && sb !== Infinity ? ' (Server)' : ''}${b > 31 ? ' – monatlich empfohlen' : ''}`, 'backup', 2);
+  if (s.server && s.server.token) {
+    const err = ab.lastError && (!ab.lastAt || ab.lastError.at > ab.lastAt);
+    add('serverbackup', 'Server-Backup', !ab.enabled ? 'warn' : sb <= 8 && !err ? 'ok' : sb <= 21 ? 'warn' : 'bad',
+      !ab.enabled ? 'nicht eingerichtet – bei Verlust des iPhones alles per Knopfdruck zurück' : err ? `Fehler: ${ab.lastError.msg}` : `automatisch, zuletzt ${fmtAge(sb)}`, '#/vault/einstellungen');
+  }
   const bt = m.lastBackupTest; const bta = age(bt && bt.at);
   add('backuptest', 'Backup-Test', bt && bt.ok && bta <= 183 ? 'ok' : bt && bt.ok ? 'warn' : 'bad', bt ? (bt.ok ? `bestanden ${fmtAge(bta)} (${bt.tx} Transaktionen, ${bt.files} Dateien)` : `fehlgeschlagen: ${bt.error}`) : 'noch nie getestet – lässt sich das Backup wirklich öffnen?', 'backuptest', 2);
   add('autolock', 'Automatische Sperre', (s.settings.autoLockMin || 5) <= 5 ? 'ok' : 'warn', `nach ${s.settings.autoLockMin || 5} Min.`, '#/vault/einstellungen');

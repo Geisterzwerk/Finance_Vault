@@ -20,6 +20,8 @@ import * as TD from './taxdocs.js';
 import { fmtRef } from './scan.js';
 import { progress, SLOTS } from './charts.js';
 import * as SRV from './server.js';
+import * as BK from './backup.js';
+import { openBackupTest } from './views-analyse.js';
 import { autoResolve } from './auto.js';
 
 export const ui = { taxYear: new Date().getMonth() < 6 ? new Date().getFullYear() - 1 : new Date().getFullYear(), invSearch: '' };
@@ -672,6 +674,78 @@ async function serverAction(a, el, b) {
   commit();
 }
 
+// ---------- Server-Backup ----------
+const whenT = (d) => { d = new Date(d); return `${ago(d)}, ${d.toLocaleDateString('de-CH')} ${d.toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })}`; };
+const mb = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');
+function backupCard() {
+  const c = BK.abCfg();
+  if (!c.enabled) return `<div class="card small mut">Sichert automatisch höchstens einmal täglich (nur nach Änderungen) auf deinen Server – doppelt verschlüsselt, der Server kann es nicht lesen. Alte Sicherungen werden ausgedünnt: 7 Tage täglich, 5 Wochen wöchentlich, 12 Monate monatlich, 3 Jahre jährlich. Neues iPhone? Auf dem Willkommen-Bildschirm «Vom Server wiederherstellen».</div>
+    <button class="btn gold block" data-act="bkon">☁ Server-Backup einrichten</button>`;
+  const err = c.lastError && (!c.lastAt || c.lastError.at > c.lastAt);
+  return `<div class="card"><div class="row">${icon(err ? 'warn' : c.lastAt ? 'ok' : 'warn')}<div class="grow"><b>Automatisch · täglich bei Änderungen</b>
+      <div class="small ${err ? 'amber' : 'mut'}">${c.lastAt ? 'Letzte Sicherung ' + whenT(c.lastAt) + ' · ' + mb(c.lastSize) : 'Noch keine Sicherung'}${c.count ? ' · ' + c.count + ' auf dem Server' : ''}</div>
+      ${err ? `<div class="small amber">${esc(c.lastError.msg)}</div>` : ''}</div></div></div>
+    <div class="grid2"><button class="btn line" data-act="bknow">☁ Jetzt sichern</button><button class="btn line" data-act="bklist">Sicherungen</button></div>
+    <div class="grid2"><button class="btn line" data-act="bkpw">Passwort ändern</button><button class="btn line" data-act="bkoff">Ausschalten</button></div>`;
+}
+async function backupAction(a, b) {
+  const c = BK.abCfg();
+  if (a === 'bkon' || a === 'bkpw') return openAutoBackup(a === 'bkon');
+  if (a === 'bkoff') { if (confirm('Automatisches Server-Backup ausschalten? Vorhandene Sicherungen bleiben auf dem Server.')) { c.enabled = false; c.password = ''; commit(); toast('Ausgeschaltet'); } return; }
+  if (a === 'bklist') return openServerBackups();
+  if (a === 'bknow') {
+    b.disabled = true; b.textContent = 'Sichere …';
+    try { const r = await BK.backupNow(); toast(r.unchanged ? 'Unverändert – letzte Sicherung ist aktuell' : 'Auf dem Server gesichert ✓'); }
+    catch (e) { toast(e.message, 4500); }
+    commit();
+  }
+}
+function openAutoBackup(first) {
+  openSheet({
+    title: first ? 'Server-Backup einrichten' : 'Backup-Passwort ändern',
+    render: () => `<div class="small mut">Backup-Passwort (mind. 10 Zeichen, z. B. vier zufällige Wörter). Es wird <b>verschlüsselt im Vault</b> gespeichert, damit die App selbständig sichern kann – nie auf dem Server. <b>Notiere es getrennt vom iPhone</b> (z. B. auf Papier zu Hause): Für die Wiederherstellung auf einem neuen iPhone brauchst du Backup-Passwort <b>und</b> PIN.</div>
+      ${pw('p1', 'Backup-Passwort', 'new-password')}${pw('p2', 'Backup-Passwort wiederholen', 'new-password')}
+      <label class="check"><input type="checkbox" name="noted"> Ich habe Backup-Passwort und PIN sicher notiert</label>
+      <button class="btn gold block big mt" data-act="go">${first ? 'Einrichten und jetzt sichern' : 'Ändern und neu sichern'}</button>`,
+    bind: (el) => el.querySelector('[data-act=go]').addEventListener('click', async (e) => {
+      const b = e.currentTarget; const p1 = el.querySelector('[name=p1]').value;
+      if (p1.length < 10) return toast('Mindestens 10 Zeichen');
+      if (p1 !== el.querySelector('[name=p2]').value) return toast('Passwörter stimmen nicht überein');
+      if (!el.querySelector('[name=noted]').checked) return toast('Bitte zuerst notieren – ohne Passwort keine Wiederherstellung');
+      const c = BK.abCfg(); const old = { ...c };
+      Object.assign(c, { enabled: true, password: p1, lastFp: '', lastAt: null });
+      b.disabled = true; b.textContent = 'Verschlüssele und lade hoch …';
+      try { await BK.backupNow(); commit(); toast('Server-Backup aktiv ✓ – erste Sicherung gespeichert', 4000); closeSheet(); }
+      catch (err) {
+        if (first) Object.assign(c, old); // fehlgeschlagen -> nicht halb eingerichtet lassen
+        commit(true); toast(err.message, 4500); b.disabled = false; b.textContent = 'Nochmals versuchen';
+      }
+    }),
+  });
+}
+function openServerBackups() {
+  let list = null, error = '', loading = false;
+  openSheet({
+    title: 'Sicherungen auf dem Server',
+    render: () => `${list == null && !error ? '<div class="small mut">Lade Liste …</div>' : ''}${error ? `<div class="small amber">${esc(error)}</div>` : ''}
+      ${list ? `<div class="card">${list.backups.map((x, i) => `<div class="txr"><div class="grow"><b>${whenT(x.at)}</b>${i === 0 ? ' <span class="tag">neueste</span>' : ''}<div class="small mut">${mb(x.size)}${x.device ? ' · ' + esc(x.device) : ''}</div></div>
+          <button class="btn line sm" data-bt="${esc(x.id)}">Testen</button><button class="btn line sm" data-br="${esc(x.id)}">Laden</button></div>`).join('') || '<div class="small mut">Noch keine Sicherung.</div>'}</div>
+        <div class="small mut">Aufbewahrt: ${list.keep.daily} Tage täglich, ${list.keep.weekly} Wochen wöchentlich, ${list.keep.monthly} Monate monatlich, ${list.keep.yearly} Jahre jährlich. Ältere werden automatisch gelöscht.</div>` : ''}`,
+    bind: (el) => {
+      if (list == null && !error && !loading) { loading = true; BK.listBackups().then((r) => { list = r; }, (e) => { error = e.message; }).finally(() => { if (el.isConnected) rerender(); }); }
+      el.addEventListener('click', async (e) => {
+        const t = e.target.closest('[data-bt],[data-br]'); if (!t) return;
+        t.disabled = true; const label = t.textContent; t.textContent = '…';
+        try {
+          const text = await BK.downloadBackup(t.dataset.bt || t.dataset.br);
+          if (t.dataset.bt) openBackupTest(text); else openRestore(text, backupInfo(text));
+        } catch (err) { toast(err.message, 4000); }
+        t.disabled = false; t.textContent = label;
+      });
+    },
+  });
+}
+
 // ---------- Einstellungen ----------
 function settingsPage() {
   const s = S().settings;
@@ -687,6 +761,7 @@ function settingsPage() {
     <div class="grid2"><button class="btn gold" data-act="backup">⬇ Backup exportieren</button><label class="btn line">⬆ Backup laden<input type="file" data-act="restore" accept=".json,application/json" hidden></label></div>
     <div class="lbl mt">Eigener Server (Tailscale)</div>
     ${serverCard()}
+    ${S().server?.token ? `<div class="lbl mt">Server-Backup</div>${backupCard()}` : ''}
     <div class="lbl mt">Erinnerungen ohne Server</div>
     <div class="card small mut">Übernimmt Jahresabschluss (31.12.), Monats-Update, Steuerdokumente (Januar) und alle offenen Rechnungen mit Alarm in den iPhone-Kalender. Funktioniert auch, wenn die App geschlossen ist. Nach neuen Rechnungen erneut tippen.</div>
     <button class="btn line block" data-act="ics">📅 Erinnerungen in Kalender übernehmen</button>
@@ -717,6 +792,7 @@ function settingsPage() {
         const a = b.dataset.act;
         if (a === 'backup') openBackup();
         if (a.startsWith('srv')) return serverAction(a, el, b);
+        if (a.startsWith('bk')) return backupAction(a, b);
         if (a === 'ics') download('FinanceVault_Erinnerungen.ics', remindersICS(), 'text/calendar');
         if (a === 'lock') { await flush(); lock(); location.reload(); }
         if (a === 'pin') openChangePin();

@@ -12,6 +12,7 @@ import { dashboard, invest, goals, celebrate } from './views-main.js';
 import { taxes, invoices, vault, ui as taxUi } from './views-more.js';
 import { analyse } from './views-analyse.js';
 import { takeSnapshot } from './perf.js';
+import * as BK from './backup.js';
 
 const ROUTES = { '': dashboard, invest, ziele: goals, steuern: taxes, rechnungen: invoices, vault, analyse };
 const TAB = { '': 0, ziele: 0, analyse: 0, invest: 1, steuern: 2, rechnungen: 3, vault: 4 };
@@ -46,6 +47,7 @@ async function updatePrices(manual = false) {
   if (!isUnlocked()) return;
   if (SRV.isConfigured() && navigator.onLine) {
     const x = await SRV.syncAll({ quiet: true });
+    if (x && isUnlocked()) setTimeout(() => isUnlocked() && BK.autoBackup().then((r) => r && !r.unchanged && render()), 3000);
     if (x && !x.legacy && Date.now() - new Date(S().pricesAt || 0) < 30 * 60e3) {
       if (manual) toast(`Aktualisiert${x.trades ? ` · ${x.trades} neue Trades` : ''}${x.auto ? ` · ${x.auto} automatisch zugeordnet` : ''}`);
       if (isUnlocked()) milestones();
@@ -66,25 +68,27 @@ function milestones() {
 }
 
 // ---------- Sperrbildschirm ----------
+const MONO = `<svg class="monogram" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="mg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b98a5c"/><stop offset=".5" stop-color="#e7c9a1"/><stop offset="1" stop-color="#c79a6c"/></linearGradient></defs><rect x="1.5" y="1.5" width="61" height="61" rx="18" fill="none" stroke="url(#mg)" stroke-width="1.5"/><path d="M21 44V20h13M21 32h10" fill="none" stroke="url(#mg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M36 20l7 24 7-24" fill="none" stroke="url(#mg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const fmtWait = (ms) => (ms >= 60e3 ? `${Math.ceil(ms / 60e3)} Min.` : `${Math.ceil(ms / 1000)} s`);
 async function showLock() {
   const first = !(await isSetUp());
   const el = $('#lock'); el.hidden = false;
   el.innerHTML = `<form class="lockbox" autocomplete="on" novalidate>
-    <svg class="monogram" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="mg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b98a5c"/><stop offset=".5" stop-color="#e7c9a1"/><stop offset="1" stop-color="#c79a6c"/></linearGradient></defs><rect x="1.5" y="1.5" width="61" height="61" rx="18" fill="none" stroke="url(#mg)" stroke-width="1.5"/><path d="M21 44V20h13M21 32h10" fill="none" stroke="url(#mg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M36 20l7 24 7-24" fill="none" stroke="url(#mg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="brand">FINANCE VAULT</div><div class="lockt">${first ? 'Willkommen' : 'Entsperren'}</div>
+    ${MONO}<div class="brand">FINANCE VAULT</div><div class="lockt">${first ? 'Willkommen' : 'Entsperren'}</div>
     <div class="small mut">${first ? 'Lege einen PIN oder ein Passwort fest (mind. 6 Zeichen). Er verschlüsselt alle Daten auf diesem Gerät. Ohne ihn gibt es keinen Zugriff, auch nicht für dich. Sicher notieren!' : 'Deine Daten sind verschlüsselt.'}</div>
     <input type="text" name="username" value="Finance Vault" autocomplete="username" hidden>
     <input id="pin" type="password" autocomplete="${first ? 'new-password' : 'current-password'}" autocapitalize="off" spellcheck="false" placeholder="PIN / Passwort" aria-label="PIN oder Passwort">
     ${first ? '<input id="pin2" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Wiederholen" aria-label="PIN wiederholen"><div class="small mut" id="str"></div>' : ''}
     <button type="submit" class="btn gold block big" id="go">${first ? 'Vault erstellen' : 'Entsperren'}</button>
     <div class="small" id="msg" role="status" aria-live="polite"></div>
-    ${first ? '<label class="btn line block mt">⬆ Backup wiederherstellen<input type="file" id="restore" accept=".json,application/json" hidden></label>' : ''}</form>`;
+    ${first ? '<div class="lbl mt">Neues Gerät?</div><button type="button" class="btn line block" id="srvrestore">☁ Vom Server wiederherstellen</button><label class="btn line block">⬆ Backup-Datei wiederherstellen<input type="file" id="restore" accept=".json,application/json" hidden></label>' : ''}</form>`;
   const form = el.querySelector('form'); const pin = $('#pin'); const msg = $('#msg'); const btn = $('#go');
   setTimeout(() => pin.focus(), 100);
   if (first) pin.addEventListener('input', () => {
     $('#str').textContent = !pin.value ? '' : /^\d+$/.test(pin.value) ? 'Nur Ziffern: bequem, aber schwach. Eine Passphrase (Wörter) ist viel sicherer.' : pin.value.length < 10 ? 'Gut – länger ist noch sicherer.' : 'Stark.';
   });
-  if (first) $('#restore').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreOnWelcome(f); });
+  if (first) $('#restore').addEventListener('change', async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreOnWelcome(await f.text()); });
+  if (first) $('#srvrestore').addEventListener('click', restoreFromServerScreen);
   let busy = false;
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -122,21 +126,41 @@ async function showLock() {
   });
 }
 
+// Neues Gerät: Server-Adresse + Kopplungscode -> neuestes Server-Backup laden
+function restoreFromServerScreen() {
+  const el = $('#lock');
+  el.innerHTML = `<form class="lockbox" novalidate>${MONO}<div class="brand">FINANCE VAULT</div><div class="lockt">Vom Server holen</div>
+    <div class="small mut">Tailscale auf diesem iPhone einschalten. Auf dem Laptop einen Kopplungscode erzeugen:<br><code>docker compose exec finance-vault python server.py pair</code></div>
+    <input id="surl" type="url" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" placeholder="https://laptop.tailnet.ts.net" aria-label="Server-Adresse">
+    <input id="scode" type="text" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="Kopplungscode" aria-label="Kopplungscode">
+    <button type="submit" class="btn gold block big" id="go">Neuestes Backup laden</button>
+    <button type="button" class="btn line block" id="cancel">Abbrechen</button>
+    <div class="small" id="msg" role="status" aria-live="polite"></div>
+    <div class="small mut">Das alte Gerät wird nach der Wiederherstellung vom Server getrennt.</div></form>`;
+  $('#cancel').addEventListener('click', () => { BK.dropPending(); showLock(); });
+  el.querySelector('form').addEventListener('submit', async (e) => {
+    e.preventDefault(); const btn = $('#go'); btn.disabled = true; $('#msg').textContent = 'Verbinde und lade Backup …';
+    try { restoreOnWelcome(await BK.restoreFromServer($('#surl').value, $('#scode').value), true); }
+    catch (err) { $('#msg').textContent = err.message; btn.disabled = false; }
+  });
+}
+
 // Backup direkt auf dem Willkommen-Bildschirm laden (z. B. nach Neuinstallation)
-async function restoreOnWelcome(file) {
-  const el = $('#lock'); let text, info;
-  try { text = await file.text(); info = backupInfo(text); } catch (err) { $('#msg').textContent = err.message; return; }
+function restoreOnWelcome(text, fromServer = false) {
+  const el = $('#lock'); let info;
+  try { info = backupInfo(text); } catch (err) { $('#msg').textContent = err.message; return; }
   el.innerHTML = `<form class="lockbox" novalidate>
-    <svg class="monogram" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="mg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b98a5c"/><stop offset=".5" stop-color="#e7c9a1"/><stop offset="1" stop-color="#c79a6c"/></linearGradient></defs><rect x="1.5" y="1.5" width="61" height="61" rx="18" fill="none" stroke="url(#mg)" stroke-width="1.5"/><path d="M21 44V20h13M21 32h10" fill="none" stroke="url(#mg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M36 20l7 24 7-24" fill="none" stroke="url(#mg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="brand">FINANCE VAULT</div><div class="lockt">Backup laden</div>
+    ${MONO}<div class="brand">FINANCE VAULT</div><div class="lockt">${fromServer ? 'Backup vom Server' : 'Backup laden'}</div>
     <div class="small mut">${info.exported ? 'Backup vom ' + esc(new Date(info.exported).toLocaleDateString('de-CH')) + '. ' : ''}${info.needsPassword ? 'Backup-Passwort und PIN des Backups eingeben.' : 'Älteres Backup: nur PIN des Backups eingeben. Danach ein neues Backup mit Backup-Passwort erstellen.'}</div>
     ${info.needsPassword ? '<input id="bp" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Backup-Passwort" aria-label="Backup-Passwort">' : ''}
     <input id="bpin" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" placeholder="PIN des Backups" aria-label="PIN des Backups">
     <button type="submit" class="btn gold block big" id="go">Wiederherstellen</button>
     <button type="button" class="btn line block" id="cancel">Abbrechen</button>
     <div class="small" id="msg" role="status" aria-live="polite"></div></form>`;
-  $('#cancel').addEventListener('click', showLock);
+  $('#cancel').addEventListener('click', () => { BK.dropPending(); showLock(); });
+  setTimeout(() => ($('#bp') || $('#bpin')).focus(), 100);
   el.querySelector('form').addEventListener('submit', async (e) => {
-    e.preventDefault(); const btn = $('#go'); btn.disabled = true; $('#msg').textContent = 'Prüfe …';
+    e.preventDefault(); const btn = $('#go'); btn.disabled = true; $('#msg').textContent = 'Entschlüssele und stelle wieder her …';
     try { await importBackup(text, { password: $('#bp')?.value || '', pin: $('#bpin').value }); location.reload(); }
     catch (err) { $('#msg').textContent = err.message || 'Backup ungültig'; btn.disabled = false; }
   });
@@ -149,7 +173,8 @@ function doLock() {
 }
 
 let started = false;
-function start() {
+async function start() {
+  if (await BK.adoptPendingServer().catch(() => false)) toast('Server neu verbunden – altes Gerät getrennt', 4000);
   render();
   if (!started) { started = true; setInterval(() => { if (isUnlocked() && !document.hidden) updatePrices(); }, 5 * 60e3); }
   updatePrices();
