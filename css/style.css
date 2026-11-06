@@ -238,3 +238,4 @@ details summary { cursor: pointer; color: var(--gold); font-weight: 500; }
 .tcal { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .tcal:last-of-type { border-bottom: 0; }
 .tcal .right { min-width: 96px; font-variant-numeric: tabular-nums; }
+.ic.half { background: transparent; border: 1.5px solid var(--green); color: var(--green); }

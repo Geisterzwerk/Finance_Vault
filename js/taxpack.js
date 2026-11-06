@@ -3,8 +3,9 @@
 // Erinnerungen (Kalender) und Prüfung der eingereichten Steuererklärung.
 // =====================================================================
 import { S } from './store.js';
-import { yearEndHoldings, accountAt } from './calc.js';
+import { yearEndHoldings } from './calc.js';
 import { reminderDates, calendar } from './taxcal.js';
+import { mappe, totals } from './taxdocs.js';
 import { getFileBytes } from './vault.js';
 import * as LIB from './libs.js';
 
@@ -115,63 +116,93 @@ export function zip(files) {
 }
 
 const fileBytes = (id) => getFileBytes(id);
-const KINDS = { bank: 'Bank', cash: 'Bargeld', securities: 'Wertschriften', pillar3a: 'Säule 3a', liability: 'Schuld' };
-const CHECK_LABELS = [['lohn', 'Lohnausweis'], ['weg', 'Arbeitsweg'], ['verpfl', 'Auswärtige Verpflegung'], ['beruf', 'Übrige Berufskosten'], ['3a', 'Säule 3a Bescheinigung'],
-  ['bildung', 'Aus- und Weiterbildung'], ['krank', 'Krankheitskosten'], ['spenden', 'Spenden'], ['bank', 'Bank-Steuerauszüge'], ['crypto', 'Crypto-Steuerbericht']];
 
-// ---------- Steuerpaket ----------
+// ---------- Steuerpaket: Bericht + Belege in Ordnerstruktur ----------
+const FOLDER = { Start: '01_Zugang_E-Tax', Einkommen: '02_Einkommen', Berufsauslagen: '03_Berufsauslagen', Vorsorge: '04_Vorsorge_3a',
+  Vermögen: '05_Vermoegen_Banken_Depots', Abzüge: '07_Abzuege', Weitere: '08_Weitere' };
+const f0 = (v) => (v == null || v === '' ? '' : Number(v).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, "'"));
+export function reportHTML(y) {
+  const s = S(); const items = mappe(y); const tot = totals(items);
+  const prevYear = Object.keys(s.taxYears).map(Number).filter((x) => x < y && s.taxYears[x].declared).sort((a, b) => b - a)[0];
+  const prevV = prevYear ? s.taxYears[prevYear].declared.values || {} : {};
+  const rows = items.filter((i) => i.ziffer && !i.wsv && i.status !== 'nicht');
+  const wsv = items.filter((i) => i.wsv && i.status !== 'nicht');
+  const missing = items.filter((i) => i.status === 'fehlt');
+  const coins = (items.find((i) => i.id === 'krypto') || {}).coins || [];
+  const st = (i) => (i.status === 'eingetragen' ? '✓ eingetragen' : i.status === 'da' ? (i.docs.length ? 'Beleg da' : 'automatisch') : 'fehlt');
+  const docs = (i) => i.docs.map((d) => esc(d.fileName || d.title)).join('<br>') || '<span class="mut">–</span>';
+  return `<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Steuern ${y} – Was trage ich wo ein</title>
+<style>:root{--g:#a97a4f}body{font:14px/1.5 -apple-system,"Helvetica Neue",Arial,sans-serif;color:#1d1e20;max-width:900px;margin:32px auto;padding:0 18px}
+h1{font-weight:500;letter-spacing:-.02em;font-size:30px;margin:4px 0 4px}h2{font-weight:600;font-size:17px;margin:30px 0 8px;padding-bottom:6px;border-bottom:1.5px solid var(--g)}
+.k{font-size:11px;letter-spacing:.24em;color:var(--g);font-weight:600}table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+th{text-align:left;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:#77736d;border-bottom:1px solid #ccc;padding:6px 6px}
+td{padding:7px 6px;border-bottom:1px solid #eee;vertical-align:top}.r{text-align:right;font-variant-numeric:tabular-nums}.mut{color:#888;font-size:12px}
+.tot td{font-weight:600;border-top:1.5px solid #1d1e20}.box{background:#f6f2ec;border-radius:10px;padding:10px 14px;margin:10px 0}.miss{color:#b5482f}
+@media print{body{margin:0}h2{break-after:avoid}tr{break-inside:avoid}}</style>
+<div class="k">FINANCE VAULT · STEUERERKLÄRUNG</div><h1>Steuerjahr ${y} – Was trage ich wo ein</h1>
+<div class="mut">${esc(s.settings.name)} · Kanton ${esc(s.settings.canton)} · E-Tax BL · erstellt am ${new Date().toLocaleDateString('de-CH')}</div>
+${missing.length ? `<div class="box miss"><b>Noch offen:</b> ${missing.map((i) => esc(i.label)).join(', ')}</div>` : '<div class="box">Alle Belege beisammen.</div>'}
+<h2>Einkünfte und Abzüge (Seiten 2–3)</h2>
+<table><tr><th>Ziff.</th><th>Bezeichnung</th><th class="r">Staat</th><th class="r">Bund</th><th class="r">${prevYear ? 'Erklärung ' + prevYear : 'Vorjahr'}</th><th>Beleg</th><th>Status</th></tr>
+${rows.map((i) => `<tr><td>${i.ziffer}</td><td>${esc(i.label)}<div class="mut">${esc(i.value && i.value.detail || '')}</div></td><td class="r">${f0(i.value && i.value.staat)}</td><td class="r">${f0(i.value && (i.value.bund ?? i.value.staat))}</td>
+  <td class="r mut">${prevV[i.ziffer] ? f0(prevV[i.ziffer].staat) + (prevV[i.ziffer].bund !== prevV[i.ziffer].staat ? ' / ' + f0(prevV[i.ziffer].bund) : '') : ''}</td><td class="mut">${docs(i)}</td><td>${st(i)}</td></tr>`).join('')}</table>
+<h2>Wertschriften- und Guthabenverzeichnis</h2>
+<table><tr><th>Position</th><th class="r">Steuerwert 31.12.</th><th class="r">Ertrag A</th><th class="r">Ertrag B</th><th>Beleg</th></tr>
+${wsv.filter((i) => i.id !== 'krypto').map((i) => `<tr><td>${esc(i.label)}<div class="mut">${i.value && i.value.estimate ? 'Schätzung – Steuerauszug fehlt' : 'E-Steuerauszug: in E-Tax importieren'}</div></td><td class="r">${f0(i.value && i.value.staat)}</td><td class="r">${f0(i.value && i.value.ertragA)}</td><td class="r">${f0(i.value && i.value.ertragB)}</td><td class="mut">${docs(i)}</td></tr>`).join('')}
+${coins.map((c) => `<tr><td>KRY · ${esc(c.asset)} <span class="mut">${c.qty} Stück × ${c.rate ?? 'Kurs fehlt'}</span></td><td class="r">${c.rate != null ? f0(c.qty * c.rate) : 'fehlt'}</td><td class="r">0</td><td class="r">0</td><td class="mut">06_Krypto</td></tr>`).join('')}
+<tr class="tot"><td>Total → Ziffer 800 / 300</td><td class="r">${f0(tot[800])}</td><td class="r">${f0(tot[970])}</td><td class="r">${f0(tot[971])}</td><td></td></tr></table>
+<table><tr><th>Ziff.</th><th>Übertrag Seite 1/4</th><th class="r">Betrag</th></tr>
+<tr><td>800</td><td>Wertschriften und Guthaben</td><td class="r">${f0(tot[800])}</td></tr><tr><td>300</td><td>Erträge aus Guthaben und Wertschriften</td><td class="r">${f0(tot[300])}</td></tr>
+<tr><td>970</td><td>Bruttoertrag A (mit Verrechnungssteuer)</td><td class="r">${f0(tot[970])}</td></tr><tr><td>971</td><td>Bruttoertrag B</td><td class="r">${f0(tot[971])}</td></tr>
+<tr><td>972</td><td>Verrechnungssteuer-Anspruch (35 % von A)</td><td class="r">${tot[972].toFixed(2)}</td></tr></table>
+<h2>Fristen und Zahlungen</h2><table><tr><th>Was</th><th>Bis</th><th class="r">Offen CHF</th><th>Status</th></tr>
+${calendar().map((x) => `<tr><td>${esc(x.title)}</td><td>${x.due.split('-').reverse().join('.')}</td><td class="r">${x.type === 'pay' ? f0(x.invoices.length ? x.open : x.estimate) : ''}</td><td>${x.done ? 'erledigt' : x.days < 0 ? 'überfällig' : 'offen'}</td></tr>`).join('')}</table>
+<h2>Ablauf in E-Tax BL</h2><ol><li>Mit den Zugangsdaten (Ordner 01) in E-Tax BL anmelden, Vorjahresdaten übernehmen.</li>
+<li>E-Steuerauszüge (Ordner 05) importieren, Crypto-Zeilen (Ordner 06) von Hand im Wertschriftenverzeichnis erfassen.</li>
+<li>Werte dieser Tabelle Ziffer für Ziffer prüfen bzw. eintragen, PDF-Belege hochladen.</li><li>Einreichen, eingereichte Erklärung als PDF in Finance Vault ablegen (Archiv).</li></ol>
+<p class="mut">Ziffern und Pauschalen wie in deinen Erklärungen 2022/2023 (E-Tax BL). Beträge jährlich in der Wegleitung prüfen. Organisationshilfe, keine Steuerberatung.</p></html>`;
+}
+export function reportCSV(y) {
+  const items = mappe(y); const tot = totals(items);
+  const L = [['Ziffer', 'Bezeichnung', 'Staat', 'Bund', 'Status', 'Belege'].join(';')];
+  for (const i of items.filter((x) => x.ziffer && x.status !== 'nicht')) L.push([i.ziffer, i.label, i.value ? i.value.staat ?? '' : '', i.value ? i.value.bund ?? i.value.staat ?? '' : '', i.status, i.docs.map((d) => d.fileName).join(' | ')].map((x) => String(x).replace(/;/g, ',')).join(';'));
+  for (const z of ['800', '300', '970', '971', '972']) L.push([z, 'Total (Wertschriftenverzeichnis)', tot[z], tot[z], '', ''].join(';'));
+  return '﻿' + L.join('\n');
+}
 export async function buildPackage(y) {
   const s = S(); const t = s.taxYears[y] || { rates: {}, checklist: {} };
+  const items = mappe(y); const files = []; const used = new Set();
+  const put = async (folder, d, label) => {
+    if (!d.file || used.has(d.id)) return; used.add(d.id);
+    const f = await fileBytes(d.file); if (f) files.push({ name: `${folder}/${safe(label || d.title || d.fileName)}_${d.id.slice(-4)}${ext(f)}`, data: f.bytes });
+  };
+  for (const i of items) for (const d of i.docs) await put(FOLDER[i.area] || '08_Weitere', d, d.title);
+  // Crypto-Bericht
   const snap = t.closed ? t.snapshot : null;
   const hold = snap ? snap.holdings : Object.values(yearEndHoldings(y)).filter((x) => x.qty > 1e-8).map((x) => ({ asset: x.asset, qty: x.qty }));
-  const rates = snap ? snap.rates : t.rates || {};
-  let total = 0; for (const h of hold) if (rates[h.asset]) total += h.qty * rates[h.asset].chf;
-  const files = [];
-  // Belege des Jahres
+  const rates = snap ? snap.rates : t.rates || {}; let total = 0;
+  const lines = ['Code;Asset;Bestand 31.12.' + y + ';Steuerkurs CHF;Steuerwert CHF;Kursquelle'];
+  hold.forEach((h) => { const r = rates[h.asset]; if (r && r.chf != null) total += h.qty * r.chf; lines.push(['KRY', h.asset, h.qty, r ? r.chf : '', r ? (h.qty * r.chf).toFixed(2) : '', r ? r.source : 'fehlt'].join(';')); });
+  lines.push(`;Total;;;${total.toFixed(2)};`);
+  if (hold.length) files.push({ name: `06_Krypto/Crypto_Steuerbericht_${y}.csv`, data: '﻿' + lines.join('\n') });
+  // Rechnungen mit Steuerrelevanz (Weiterbildung, Gesundheit, Spenden, Abo)
   const inYear = (d) => d && new Date(d).getFullYear() === y;
-  const receipts = s.invoices.filter((i) => i.tax !== 'no' && i.category !== 'Steuern' && inYear(i.paidAt || i.due));
-  const docs = (s.documents || []).filter((d) => d.status !== 'inbox' && (+d.year === y));
-  const folder = (cat) => ({ Einkommen: '05_Einkommen', Vorsorge: '04_Vorsorge', Vermögen: '03_Banken_Vermoegen', Studium: '06_Abzuege/Weiterbildung', Gesundheit: '06_Abzuege/Gesundheit', Spenden: '06_Abzuege/Spenden', Mobilität: '06_Abzuege/Arbeitsweg' }[cat] || '07_Sonstiges');
-  for (const i of receipts) if (i.file) {
-    const f = await fileBytes(i.file); if (f) files.push({ name: `${folder(i.category)}/${safe(i.issuer)}_${safe(i.number || i.id)}${ext(f)}`, data: f.bytes });
+  for (const i of s.invoices.filter((x) => x.tax !== 'no' && x.category !== 'Steuern' && inYear(x.paidAt || x.due) && x.file)) {
+    const f = await fileBytes(i.file); if (f) files.push({ name: `07_Abzuege/${safe(i.ziffer ? 'Ziff' + i.ziffer + '_' : '')}${safe(i.issuer)}_${safe(i.number || i.id)}${ext(f)}`, data: f.bytes });
   }
-  for (const d of docs) if (d.file) {
-    const f = await fileBytes(d.file);
-    const base = d.kind === 'erklaerung' ? '08_Eingereicht' : d.kind === 'veranlagung' ? '09_Veranlagung' : folder(d.category);
-    if (f) files.push({ name: `${base}/${safe(d.title || d.issuer)}_${d.id.slice(-4)}${ext(f)}`, data: f.bytes });
+  // Steuerrechnungen des Jahres
+  for (const i of s.invoices.filter((x) => x.category === 'Steuern' && +x.taxYear === y && x.file)) {
+    const f = await fileBytes(i.file); if (f) files.push({ name: `09_Steuerrechnungen/${safe(i.taxKind || 'Steuer')}_${safe(i.taxStage || '')}_${i.id.slice(-4)}${ext(f)}`, data: f.bytes });
   }
-  // Crypto-CSV
-  const lines = ['Asset;Bestand 31.12.' + y + ';Steuerkurs CHF;Steuerwert CHF;Kursquelle'];
-  hold.forEach((h) => { const r = rates[h.asset]; lines.push([h.asset, h.qty, r ? r.chf : '', r ? (h.qty * r.chf).toFixed(2) : '', r ? r.source : 'fehlt'].join(';')); });
-  lines.push(`Total;;;${total.toFixed(2)};`);
-  files.push({ name: `02_Investments/Crypto_Steuerbericht_${y}.csv`, data: '\uFEFF' + lines.join('\n') });
-  // Übersicht
-  const byZ = {}; receipts.forEach((i) => { (byZ[i.ziffer || '–'] ||= []).push(i); });
-  const pay = taxPayments(y);
-  const html = `<!doctype html><meta charset="utf-8"><title>Steuern ${y}</title>
-<style>body{font:14px/1.45 Georgia,serif;max-width:820px;margin:30px auto;color:#111;padding:0 16px}h1{border-bottom:2px solid #C9A45C;padding-bottom:6px}h2{margin-top:28px;color:#0C1626}
-.k{font:700 11px Arial;letter-spacing:.2em;color:#B89148}table{width:100%;border-collapse:collapse;font:13px Arial}th{background:#0C1626;color:#F4EFE4;text-align:left;padding:6px}td{padding:6px;border-bottom:1px solid #ddd}.r{text-align:right}.mut{color:#666;font-size:12px}</style>
-<div class="k">FINANCE VAULT · STEUERPAKET</div><h1>Steuerjahr ${y}</h1>
-<p>${esc(s.settings.name)} · Kanton ${esc(s.settings.canton)} · erstellt am ${new Date().toLocaleDateString('de-CH')}${snap ? ' · Snapshot 31.12. abgeschlossen' : ' · Entwurf (Jahr nicht abgeschlossen)'}</p>
-<h2>Was muss ich wo eintragen?</h2><table><tr><th>Ziffer</th><th>Bereich</th><th class="r">Betrag</th><th>Belege</th></tr>
-<tr><td>800</td><td>Kryptowährungen (je Coin eine Position)</td><td class="r">${chf(total)}</td><td>02_Investments</td></tr>
-${Object.entries(byZ).map(([z, l]) => `<tr><td>${esc(z)}</td><td>${esc([...new Set(l.map((i) => i.category))].join(', '))}</td><td class="r">${chf(l.reduce((a, i) => a + (+i.amount || 0), 0))}</td><td>${l.length} Beleg(e)</td></tr>`).join('')}
-${docs.filter((d) => d.ziffer).map((d) => `<tr><td>${esc(d.ziffer)}</td><td>${esc(d.title || d.category)}</td><td class="r">${d.amount ? chf(d.amount) : 'siehe Dokument'}</td><td>${esc(folder(d.category))}</td></tr>`).join('')}
-</table>
-<h2>Kryptowährungen per 31.12.${y}</h2><table><tr><th>Asset</th><th class="r">Bestand</th><th class="r">Steuerkurs</th><th class="r">Steuerwert</th><th>Quelle</th></tr>
-${hold.map((h) => { const r = rates[h.asset]; return `<tr><td>${esc(h.asset)}</td><td class="r">${h.qty}</td><td class="r">${r ? r.chf : '–'}</td><td class="r">${r ? chf(h.qty * r.chf) : 'fehlt'}</td><td>${r ? esc(r.source) : ''}</td></tr>`; }).join('')}
-<tr><td><b>Total</b></td><td></td><td></td><td class="r"><b>${chf(total)}</b></td><td></td></tr></table>
-<h2>Konten per 31.12.${y}</h2><table><tr><th>Konto</th><th>Art</th><th class="r">Stand 31.12.</th><th>Grundlage</th></tr>
-${s.accounts.map((a) => { const v = accountAt(a, new Date(y, 11, 31, 23, 59).getTime()); return `<tr><td>${esc(a.name)}</td><td>${esc(KINDS[a.kind] || a.kind)}</td><td class="r">${v == null ? '–' : chf(v)}</td><td class="mut">${v == null ? 'kein Stand vor 31.12.' : 'letzter erfasster Stand'}</td></tr>`; }).join('')}</table>
-<p class="mut">Massgebend ist der Stand per 31.12. laut Bank-/Vorsorge-Steuerauszug. Die App zeigt den letzten von dir erfassten Stand bis zu diesem Datum.</p>
-<h2>Steuerzahlungen ${y}</h2><table><tr><th>Steuer</th><th class="r">Soll</th><th class="r">Bezahlt</th><th class="r">Offen</th></tr>
-${Object.entries(pay.by).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="r">${chf(v.soll)}</td><td class="r">${chf(v.paid)}</td><td class="r">${chf(v.soll - v.paid)}</td></tr>`).join('')}
-<tr><td><b>Total</b></td><td class="r"><b>${chf(pay.soll)}</b></td><td class="r"><b>${chf(pay.paid)}</b></td><td class="r"><b>${chf(pay.open)}</b></td></tr></table>
-<h2>Fristen</h2><table><tr><th>Was</th><th>Bis</th><th class="r">Offen</th><th>Status</th></tr>
-${calendar().map((x) => `<tr><td>${esc(x.title)}</td><td>${x.due.split('-').reverse().join('.')}</td><td class="r">${x.type === 'pay' ? chf(x.invoices.length ? x.open : x.estimate) : ''}</td><td>${x.done ? 'erledigt' : x.days < 0 ? 'überfällig' : 'offen'}</td></tr>`).join('')}</table>
-<h2>Checkliste</h2><ul>${CHECK_LABELS.map(([k, l]) => `<li>${(t.checklist || {})[k] ? '✓' : '○'} ${esc(l)}</li>`).join('')}</ul>
-<p class="mut">Ziffern aus der Steuererklärung 2023 (E-Tax BL), jährlich prüfen. Organisationshilfe, keine Steuerberatung.</p>`;
-  files.unshift({ name: `01_Uebersicht_Steuern_${y}.html`, data: html });
+  // Übrige Dokumente des Jahres (Erklärung, Veranlagung, Nur-Ablage)
+  for (const d of (s.documents || []).filter((x) => x.status !== 'inbox' && +x.year === y && !used.has(x.id))) {
+    const folder = d.kind === 'erklaerung' ? '10_Eingereicht' : d.kind === 'veranlagung' ? '11_Veranlagung' : d.taxItem === 'info' ? '99_Nur_Ablage_nicht_noetig' : '08_Weitere';
+    await put(folder, d, d.title);
+  }
+  // Vorjahres-Erklärung als Vorlage
+  for (const d of (s.documents || []).filter((x) => x.kind === 'erklaerung' && +x.year === y - 1)) await put('00_Bericht/Vorjahr', d, `Steuererklaerung_${y - 1}`);
+  files.unshift({ name: `00_Bericht/Eintragen_${y}.csv`, data: reportCSV(y) });
+  files.unshift({ name: `00_Bericht/Steuern_${y}_Was_trage_ich_wo_ein.html`, data: reportHTML(y) });
   return { blob: zip(files), count: files.length };
 }
 const ext = (f) => (f.type === 'application/pdf' ? '.pdf' : f.type === 'image/png' ? '.png' : f.type.startsWith('image/') ? '.jpg' : (f.name && /\.\w+$/.exec(f.name) ? /\.\w+$/.exec(f.name)[0] : ''));

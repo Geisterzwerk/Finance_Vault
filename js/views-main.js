@@ -9,6 +9,7 @@ import { openEstimate, missingOpenings } from './estimate.js';
 import { ring, legend, area, progress, lastId, SLOTS, OTHER, gc } from './charts.js';
 import { reconcile } from './auto.js';
 import { calendar as taxCalendar } from './taxcal.js';
+import { mappe as taxMappe, progressOf } from './taxdocs.js';
 import { loadHistory } from './prices.js';
 import {
   esc, chf, qty, price, pct, cls, dmy, dmyShort, hm, ago, daysUntil, greeting, longDate, icon,
@@ -97,8 +98,6 @@ export function dashboard() {
   const g2 = s.goals.find((g) => g.kind === 'asset' && g.asset === 'BTC');
   const inv = openInvoicesSummary();
   const yr = new Date().getMonth() < 6 ? new Date().getFullYear() - 1 : new Date().getFullYear();
-  const ck = (s.taxYears[yr] || {}).checklist || {};
-  const taxDone = Object.values(ck).filter(Boolean).length;
   const live = s.pricesAt && Date.now() - new Date(s.pricesAt) < 15 * 60e3;
   const missing = nw.pf.held.filter((x) => x.quality === 'missing').length;
   const closing = closingDue();
@@ -132,7 +131,7 @@ export function dashboard() {
         <div class="small ${nx.days < 0 ? 'neg' : nx.days <= 21 ? 'amber' : 'mut'}">${nx.days < 0 ? 'überfällig' : nx.days === 0 ? 'heute' : 'in ' + nx.days + ' Tagen'} · ${nx.due.split('-').reverse().join('.')}</div></div>` : ''; })()}
     </div>
     <div>
-      <div class="card clickable row" data-go="#/steuern">${progress(taxDone / TAX_TOTAL, SLOTS[2], 46)}<div class="grow"><div class="lbl nowrap">Checkliste Steuererklärung</div><div class="big1">${yr}</div><div class="small mut">${taxDone} von ${TAX_TOTAL}</div></div></div>
+      <div class="card clickable row" data-go="#/steuern">${progress(progressOf(taxMappe(yr)), SLOTS[2], 46)}<div class="grow"><div class="lbl nowrap">Steuermappe</div><div class="big1">${yr}</div><div class="small mut">${(() => { const m = taxMappe(yr); return `${m.filter((i) => i.status === 'fehlt').length} Belege fehlen`; })()}</div></div></div>
     </div>
     ${closing ? `<div class="card clickable row goldb" data-go="#/steuern">${icon('warn')}<div class="grow"><b>Jahresabschluss ${closing}</b><div class="small mut">Daten prüfen, Bestand per 31.12. einfrieren, Steuerpaket erstellen</div></div><span class="chev">›</span></div>` : ''}
     ${rc + inboxDocs ? `<div class="card clickable row" data-go="#/vault/inbox">${icon('warn')}<div class="grow"><b>Finance Inbox</b><div class="small mut">${[rc ? rc + ' Transaktion' + (rc > 1 ? 'en' : '') + ' zuordnen' : '', inboxDocs ? inboxDocs + ' Dokument' + (inboxDocs > 1 ? 'e' : '') + ' prüfen' : ''].filter(Boolean).join(' · ')}</div></div><span class="chev">›</span></div>` : ''}

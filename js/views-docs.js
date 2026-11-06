@@ -282,6 +282,11 @@ function archiveList() {
 export function bindTaxExtras(el, y, setYear) {
   el.querySelectorAll('[data-up]').forEach((inp) => inp.addEventListener('change', async () => {
     const f = inp.files[0]; inp.value = ''; if (!f) return;
+    if (inp.dataset.up === 'erklaerung' && /pdf/i.test(f.type)) {
+      const { ingest } = await import('./taxdocs.js');
+      const d = await ingest(f, y); d.kind = 'erklaerung'; d.title = `Steuererklärung ${d.year}`; d.taxItem = null;
+      commit(); toast(d.extract && d.extract.ziffern ? `Erklärung ${d.year}: ${d.extract.ziffern} Ziffern als Vorjahreswerte übernommen` : 'Im Archiv gespeichert'); return;
+    }
     const fid = uid(); await putFile(fid, f);
     S().documents.push({ id: uid(), status: 'done', kind: inp.dataset.up, title: inp.dataset.up === 'erklaerung' ? `Steuererklärung ${y}` : `Veranlagung ${y}`, year: y, category: 'Steuern', tax: 'yes', file: fid, fileName: f.name, created: new Date().toISOString() });
     commit(); toast('Im Archiv gespeichert');

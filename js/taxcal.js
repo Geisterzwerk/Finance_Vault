@@ -15,6 +15,7 @@
 // noch, wird der Vorjahresbetrag als Schätzung (≈) verwendet.
 // =====================================================================
 import { S } from './store.js';
+import { mappe } from './taxdocs.js';
 
 const DAY = 864e5;
 const iso = (y, m, d) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
@@ -139,6 +140,15 @@ export function reminderDates(now = Date.now()) {
     if (x.type === 'file' && !x.filed && x.due === x.ordinary) {
       const at = end(x.ext) - DAY + 9 * 36e5 - 7 * DAY;
       if (at > now) out.push({ id: `tax-${x.id}-ext`, at, title: 'Steuererklärung', body: `Verlängerte Frist (${x.ext.slice(8, 10)}.${x.ext.slice(5, 7)}.) endet in 7 Tagen – sonst Fristerstreckung beantragen.`, day: new Date(at).toISOString().slice(0, 10) });
+    }
+  }
+  // Fehlende Belege fürs Vorjahr: Mitte Februar und Anfang März nachfragen (nur Namen, keine Beträge)
+  const Y = new Date(now).getFullYear(); const f = calendar(now).find((x) => x.type === 'file');
+  if (f && !f.done) {
+    const miss = mappe(Y - 1).filter((i) => i.status === 'fehlt' && i.when !== '–');
+    for (const [id, m, d] of [['feb', 1, 15], ['mar', 2, 5]]) {
+      const at = new Date(Y, m, d, 18).getTime();
+      if (miss.length && at > now) out.push({ id: `tax-docs-${Y}-${id}`, at, title: 'Steuerbelege', body: `Noch nicht in der Steuermappe: ${miss.slice(0, 3).map((i) => i.label).join(', ')}${miss.length > 3 ? ' …' : ''}`, day: new Date(at).toISOString().slice(0, 10) });
     }
   }
   return out;

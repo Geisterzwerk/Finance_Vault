@@ -9,13 +9,14 @@ import * as BX from './bingx.js';
 import { putFile, getFileURL, deleteFile, exportBackup, importBackup, backupInfo, wipeAll, changePin, lock } from './vault.js';
 import { APP_VERSION } from './version.js';
 import {
-  esc, chf, qty, price, dmy, dmyShort, ago, daysUntil, isoDay, bar, icon, openSheet, closeSheet, closeAll,
+  esc, chf, qty, price, dmy, dmyShort, ago, daysUntil, isoDay, icon, openSheet, closeSheet, closeAll,
   toast, download, chips, chipVal, rerender,
 } from './ui.js';
-import { TAX_TOTAL, openTx } from './views-main.js';
+import { openTx } from './views-main.js';
 import { inboxPage, documentsPage, ledgerPage, openScanner, taxExtrasHTML, bindTaxExtras } from './views-docs.js';
-import { remindersICS, TAX_KINDS } from './taxpack.js';
+import { remindersICS, TAX_KINDS, buildPackage, reportHTML } from './taxpack.js';
 import * as TC from './taxcal.js';
+import * as TD from './taxdocs.js';
 import { progress, SLOTS } from './charts.js';
 import * as SRV from './server.js';
 import { autoResolve } from './auto.js';
@@ -70,6 +71,104 @@ function taxCalendarHTML() {
     <label class="field mt"><span>Rücklage-Konto (optional)</span><select data-reserve><option value="">– keins –</option>${S().accounts.filter((a) => a.kind !== 'liability').map((a) => `<option value="${a.id}" ${a.id === c.reserveAccountId ? 'selected' : ''}>${esc(a.name)} · ${chf(a.value)}</option>`).join('')}</select></label>
     <div class="small mut">Tipp: ein eigenes Sparkonto für Steuern und einen Dauerauftrag in dieser Höhe einrichten.</div></div>` : ''}`;
 }
+// ---------- Steuermappe ----------
+const fmtV = (v) => (v == null || v === '' ? '–' : chf(+v));
+function mappeHTML(y) {
+  const items = TD.mappe(y); const tot = TD.totals(items); const pr = TD.progressOf(items);
+  const areas = [...new Set(items.map((i) => i.area))];
+  const st = (i) => (i.status === 'eingetragen' ? icon('ok') : i.status === 'da' ? '<span class="ic half">✓</span>' : i.status === 'nicht' ? '<span class="ic empty">–</span>' : '<span class="ic empty"></span>');
+  const valTxt = (i) => (!i.value ? (i.prev ? `<span class="mut">${i.prev.year}: ${fmtV(i.prev.staat)}</span>` : '') : i.value.staat === i.value.bund || i.value.bund == null ? `${i.value.estimate ? '≈ ' : ''}${fmtV(i.value.staat)}` : `${fmtV(i.value.staat)} / ${fmtV(i.value.bund)}`);
+  const missing = items.filter((i) => i.status === 'fehlt');
+  return `<div class="card">
+      <div class="row">${progress(pr, SLOTS[2], 54)}<div class="grow"><div class="big2">${items.filter((i) => i.status === 'eingetragen').length} von ${items.filter((i) => i.status !== 'nicht').length} eingetragen</div>
+        <div class="small mut">${missing.length ? `Es fehlen noch: ${esc(missing.slice(0, 3).map((i) => i.label).join(', '))}${missing.length > 3 ? ' …' : ''}` : 'Alle Belege beisammen'}</div></div></div>
+      <label class="btn gold block mt">⬆ Belege hochladen (mehrere PDFs)<input type="file" multiple accept="application/pdf,image/*" data-mappe="upload" hidden></label>
+      <div class="small mut">Lohnausweis, 3a-Bescheinigung, Steuerauszüge (BLKB, VIAC, Raiffeisen …), E-Tax-Brief, alte Steuererklärung – Finance Vault erkennt den Beleg, liest die Beträge aus und legt ihn verschlüsselt ab.</div>
+    </div>
+    ${areas.map((a) => `<div class="small mut gl">${esc(a)}</div><div class="card">${items.filter((i) => i.area === a).map((i) => `
+      <div class="txr clickable" data-mi="${esc(i.id)}">${st(i)}<div class="grow"><b class="${i.status === 'nicht' ? 'mut' : ''}">${esc(i.label)}</b>
+        <div class="small mut">${i.ziffer ? 'Ziff. ' + i.ziffer + ' · ' : ''}${esc(i.source)}${i.docs.length ? ` · 📎 ${i.docs.length}` : i.status === 'fehlt' && i.when !== '–' ? ' · erwartet ' + esc(i.when) : ''}</div></div>
+        <span class="small right">${valTxt(i)}</span><span class="chev">›</span></div>`).join('')}</div>`).join('')}
+    <div class="lbl mt">Übertrag Seite 4 / Wertschriftenverzeichnis</div>
+    <div class="card"><div class="txr"><span class="grow">Ziff. 800 Wertschriften und Guthaben</span><b>${tot.estimate ? '≈ ' : ''}${chf(tot[800])}</b></div>
+      <div class="txr"><span class="grow">Ziff. 300 Erträge</span><b>${chf(tot[300])}</b></div>
+      <div class="txr"><span class="grow">Ziff. 970 Bruttoertrag A</span><b>${chf(tot[970])}</b></div>
+      <div class="txr"><span class="grow">Ziff. 972 Verrechnungssteuer-Anspruch</span><b>${chf(tot[972], 2)}</b></div>
+      ${tot.estimate ? '<div class="small amber mt">≈ enthält Schätzungen (Steuerauszug oder Steuerkurs fehlt).</div>' : ''}
+      <div class="small mut mt">Tipp: In E-Tax BL kannst du E-Steuerauszüge direkt importieren (Wertschriftenverzeichnis › E-Steuerauszug). Dann nur noch die Crypto-Zeilen von Hand.</div></div>
+    <button class="btn line block" data-mappe="report">📄 Bericht «Was trage ich wo ein»</button>`;
+}
+async function uploadMappe(files, y, item = null) {
+  const res = [];
+  for (const f of files) { try { res.push(await TD.ingest(f, y, item)); } catch (e) { console.error(e); toast('Konnte ' + f.name + ' nicht lesen'); } }
+  commit();
+  const names = res.map((d) => d.docType === 'erklaerung' ? `Steuererklärung ${d.year} (${d.extract.ziffern} Ziffern übernommen)` : d.docType === 'info' ? `${d.fileName}: nicht nötig, abgelegt` : d.title + (d.extract && d.extract.steuerwert != null ? ` · Steuerwert ${chf(d.extract.steuerwert)}` : d.extract && d.extract.nettolohn ? ` · Nettolohn ${chf(d.extract.nettolohn)}` : d.extract && d.extract.total ? ` · ${chf(d.extract.total)}` : ''));
+  if (names.length) openSheet({ title: 'Belege eingelesen', render: () => `${res.map((d, k) => `<div class="txr">${d.taxItem || d.docType === 'erklaerung' ? icon('ok') : icon('warn')}<span class="grow small">${esc(names[k])}${d.year !== y ? ` <span class="tag">${d.year}</span>` : ''}${!d.taxItem && d.docType !== 'erklaerung' ? '<div class="amber">Nicht erkannt – in der Mappe einer Position zuordnen</div>' : ''}</span></div>`).join('')}
+    <div class="small mut mt">Die Beträge sind übernommen. Prüfe sie kurz in der jeweiligen Position.</div><button class="btn gold block mt" data-act="ok">OK</button>`, bind: (el) => el.querySelector('[data-act=ok]').addEventListener('click', closeSheet) });
+}
+function openMappeItem(y, id) {
+  openSheet({
+    title: 'Steuermappe', live: true,
+    render: () => {
+      const i = TD.mappe(y).find((x) => x.id === id); if (!i) return '<div class="card">Position nicht gefunden.</div>';
+      const v = i.state.values || {}; const a = i.auto || {};
+      const unassigned = (S().documents || []).filter((d) => +d.year === +y && d.status !== 'inbox' && !d.taxItem && d.kind !== 'erklaerung');
+      return `<div class="lbl">${esc(i.area)}${i.ziffer ? ' · Ziffer ' + i.ziffer + ' ' + esc(TD.ZIFFERN[i.ziffer] || '') : ''}</div><div class="big2">${esc(i.label)}</div>
+        <div class="note">${esc(i.how)}</div>
+        ${i.auto ? `<div class="small mut">Automatisch: ${esc(i.auto.detail || '')}</div>` : ''}
+        ${i.prev ? `<div class="small mut">Erklärung ${i.prev.year}: Staat ${fmtV(i.prev.staat)} · Bund ${fmtV(i.prev.bund)}</div>` : ''}
+        ${i.ziffer ? `<div class="grid2 mt"><label class="field"><span>${i.wsv ? 'Steuerwert 31.12.' : 'Betrag Staat'}</span><input name="staat" inputmode="decimal" value="${esc(v.staat ?? '')}" placeholder="${esc(a.staat ?? '')}"></label>
+          ${i.wsv ? `<label class="field"><span>Ertrag A (mit VSt)</span><input name="ertragA" inputmode="decimal" value="${esc(v.ertragA ?? '')}" placeholder="${esc(a.ertragA ?? '')}"></label><label class="field"><span>Ertrag B (ohne VSt)</span><input name="ertragB" inputmode="decimal" value="${esc(v.ertragB ?? '')}" placeholder="${esc(a.ertragB ?? '')}"></label>`
+            : `<label class="field"><span>Betrag Bund</span><input name="bund" inputmode="decimal" value="${esc(v.bund ?? '')}" placeholder="${esc(a.bund ?? '')}"></label>`}</div>
+          <div class="small mut">Leer lassen = automatischer Wert (grau). Eigener Wert überschreibt.</div>` : ''}
+        ${i.coins ? `<div class="lbl mt">Crypto-Zeilen (Code KRY)</div>${i.coins.map((c) => `<div class="txr"><b class="grow">${esc(c.asset)}</b><span class="small">${qty(c.qty)}</span><span class="small mut">${c.rate != null ? '× ' + c.rate : 'Kurs fehlt'}</span><b class="small">${c.rate != null ? chf(c.qty * c.rate) : '–'}</b></div>`).join('')}` : ''}
+        <div class="lbl mt">Belege (${i.docs.length})</div>
+        ${i.docs.map((d) => `<div class="txr"><span class="grow small">${esc(d.title || d.fileName)}<div class="mut">${esc(d.fileName || '')}</div></span><button class="btn line sm" data-open="${d.id}">Öffnen</button><button class="btn danger sm" data-unlink="${d.id}">✕</button></div>`).join('') || '<div class="small mut">Noch kein Beleg.</div>'}
+        <label class="btn line block">⬆ Beleg hinzufügen<input type="file" multiple accept="application/pdf,image/*" data-up-item hidden></label>
+        ${unassigned.length ? `<label class="field"><span>Vorhandenes Dokument zuordnen</span><select data-assign><option value="">–</option>${unassigned.map((d) => `<option value="${d.id}">${esc(d.title || d.fileName)}</option>`).join('')}</select></label>` : ''}
+        <label class="field mt"><span>Notiz</span><input name="note" value="${esc(i.state.note || '')}"></label>
+        <button class="btn gold block big mt" data-act="done">${i.status === 'eingetragen' ? '✓ In E-Tax eingetragen' : 'Speichern & als eingetragen markieren'}</button>
+        <div class="grid2"><button class="btn line" data-act="save">Nur speichern</button><button class="btn line" data-act="nicht">${i.status === 'nicht' ? 'Wieder nötig' : 'Dieses Jahr nicht nötig'}</button></div>`;
+    },
+    bind: (el) => {
+      const st = () => ((TD.mappe(y), S().taxYears[y].mappe)[id] ||= {});
+      const read = () => { const o = {}; for (const k of ['staat', 'bund', 'ertragA', 'ertragB']) { const f = el.querySelector(`[name=${k}]`); if (f) o[k] = f.value.trim() === '' ? '' : Number(f.value.replace(/['’]/g, '').replace(',', '.')); } return o; };
+      el.querySelector('[data-up-item]').addEventListener('change', async (e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) { await uploadMappe(fs, y, id); } });
+      el.querySelector('[data-assign]')?.addEventListener('change', (e) => { const d = S().documents.find((x) => x.id === e.target.value); if (d) { d.taxItem = id; commit(); } });
+      el.addEventListener('click', async (e) => {
+        const o = e.target.closest('[data-open]'); if (o) { const d = S().documents.find((x) => x.id === o.dataset.open); const u = d && await getFileURL(d.file); if (u) window.open(u, '_blank', 'noopener'); return; }
+        const ul = e.target.closest('[data-unlink]'); if (ul) { const d = S().documents.find((x) => x.id === ul.dataset.unlink); if (d) { d.taxItem = null; commit(); } return; }
+        const b = e.target.closest('[data-act]'); if (!b) return; const s0 = st();
+        const vals = read(); if (Object.values(vals).some((x) => Number.isNaN(x))) return toast('Betrag ungültig');
+        s0.values = vals; s0.note = el.querySelector('[name=note]').value.trim();
+        if (b.dataset.act === 'done') s0.status = 'eingetragen';
+        if (b.dataset.act === 'nicht') s0.status = s0.status === 'nicht' ? '' : 'nicht';
+        commit(); toast('Gespeichert'); if (b.dataset.act !== 'save') closeSheet();
+      });
+    },
+  });
+}
+function bindMappe(el, y) {
+  el.querySelector('[data-mappe=upload]')?.addEventListener('change', async (e) => { const fs = [...e.target.files]; e.target.value = ''; if (!fs.length) return; toast(`Lese ${fs.length} Beleg(e) …`); await uploadMappe(fs, y); });
+  el.addEventListener('click', (e) => {
+    const m = e.target.closest('[data-mi]'); if (m) return openMappeItem(y, m.dataset.mi);
+    if (e.target.closest('[data-mappe=report]')) return openReport(y);
+  });
+}
+function openReport(y) {
+  openSheet({
+    title: `Bericht ${y}`,
+    render: () => `<div class="small mut">Der Bericht listet jede Ziffer mit Betrag (Staat/Bund), Beleg und Vorjahr – zum Abtippen in E-Tax BL. Das Steuerpaket (ZIP) enthält zusätzlich alle Belege in einer Ordnerstruktur.</div>
+      <button class="btn gold block big mt" data-act="pack">📦 Steuerpaket ${y} (ZIP mit Bericht + Belegen)</button>
+      <button class="btn line block" data-act="html">📄 Nur Bericht (HTML zum Drucken)</button>`,
+    bind: (el) => el.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-act]'); if (!b) return;
+      if (b.dataset.act === 'pack') { b.disabled = true; b.textContent = 'Erstelle Paket …'; try { const { blob, count } = await buildPackage(y); download(`Steuerpaket_${y}.zip`, blob); toast(`${count} Dateien im Steuerpaket`); } catch (err) { console.error(err); toast('Paket fehlgeschlagen'); } b.disabled = false; b.textContent = `📦 Steuerpaket ${y} (ZIP mit Bericht + Belegen)`; }
+      if (b.dataset.act === 'html') download(`Steuern_${y}_Eintragen.html`, reportHTML(y), 'text/html');
+    }),
+  });
+}
+
 function openTaxSettings() {
   const c = TC.cfg();
   openSheet({
@@ -125,18 +224,14 @@ export function taxes() {
   const rates = snap ? snap.rates : t.rates;
   let total = 0, missingRate = 0;
   for (const h of hold) { const r = rates[h.asset]; if (r && r.chf != null) total += h.qty * r.chf; else missingRate++; }
-  const done = CHECKLIST.filter(([k]) => t.checklist[k]).length;
   const inv = S().invoices.filter((i) => i.tax !== 'no' && new Date(i.paidAt || i.due).getFullYear() === y);
   const byZ = {}; inv.forEach((i) => { (byZ[i.ziffer || '–'] ||= []).push(i); });
-  const groups = [...new Set(CHECKLIST.map((c) => c[3]))];
-  const prev = S().taxYears[y - 1] || {};
-  const ev = TC.evidence(y);
   return {
     title: `Steuern ${y}`, sub: `${esc(S().settings.canton)} · E-Tax BL <button class="ybtn" data-y="-1">‹</button><button class="ybtn" data-y="1">›</button>`,
     html: `
     ${taxCalendarHTML()}
-    <div class="lbl mt">Steuererklärung ${y}</div>
-    <div class="card hero"><div class="lbl">Vorbereitung</div><div class="row"><div class="serif huge grow">${Math.round((done / TAX_TOTAL) * 100)} %</div><span class="small mut">${done} von ${TAX_TOTAL} erledigt</span></div>${bar(done / TAX_TOTAL)}</div>
+    <div class="lbl mt">Steuermappe ${y}</div>
+    ${mappeHTML(y)}
     ${taxExtrasHTML(y)}
     <div class="lbl mt">Crypto-Steuerbericht · Bestand per 31.12.${y}</div>
     <div class="card ${snap ? 'goldb' : ''}">
@@ -152,14 +247,10 @@ export function taxes() {
         : '<button class="btn line block mt" data-act="reopen">Abschluss aufheben</button>'}
       <div class="grid2 mt"><button class="btn line" data-act="print">PDF / Drucken</button><button class="btn line" data-act="csv">CSV exportieren</button></div>
     </div>
-    <div class="lbl mt">Checkliste E-Tax BL</div>
-    ${groups.map((g) => `<div class="small mut gl">${g}</div>${CHECKLIST.filter((c) => c[3] === g).map(([k, l, z]) => `
-      <div class="chk clickable" data-chk="${k}">${t.checklist[k] ? icon('ok') : '<span class="ic empty"></span>'}<span class="grow ${t.checklist[k] ? '' : 'b'}">${l}${!t.checklist[k] && ev[k] ? ` <span class="tag">${ev[k]} Beleg${ev[k] > 1 ? 'e' : ''} da</span>` : ''}${!t.checklist[k] && !ev[k] && prev.checklist && prev.checklist[k] ? ' <span class="tag">im Vorjahr</span>' : ''}</span><span class="small mut">Ziffer ${z}</span></div>`).join('')}`).join('')}
-    <div class="small mut mt">Die Ziffern stammen aus deiner Steuererklärung 2023. Bitte jedes Jahr im E-Tax BL kontrollieren.</div>
     ${inv.length ? `<div class="lbl mt">Steuerrelevante Belege ${y}</div>${Object.entries(byZ).map(([z, list]) => `<div class="card"><div class="row"><b class="grow">Ziffer ${esc(z)}</b><b>${chf(list.reduce((a, i) => a + (+i.amount || 0), 0), 2)}</b></div>
       ${list.map((i) => `<div class="txr clickable" data-inv="${i.id}">${i.tax === 'yes' ? icon('ok') : icon('warn')}<span class="grow small">${esc(i.issuer)} · ${esc(i.title || '')}</span><span class="small">${chf(+i.amount, 2)}</span></div>`).join('')}</div>`).join('')}` : ''}`,
-    bind: (el) => { bindTaxCalendar(el); bindTaxExtras(el, y, (yy) => { ui.taxYear = yy; dispatchEvent(new Event('rerender')); scrollTo(0, 0); }); el.addEventListener('click', async (e) => {
-      if (e.target.closest('[data-cal-act], [data-reserve]')) return;
+    bind: (el) => { bindTaxCalendar(el); bindMappe(el, y); bindTaxExtras(el, y, (yy) => { ui.taxYear = yy; dispatchEvent(new Event('rerender')); scrollTo(0, 0); }); el.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-cal-act], [data-reserve], [data-mi], [data-mappe]')) return;
       const yb = e.target.closest('[data-y]'); if (yb) { ui.taxYear += +yb.dataset.y; dispatchEvent(new Event('rerender')); return; }
       const c = e.target.closest('[data-chk]'); if (c) { t.checklist[c.dataset.chk] = !t.checklist[c.dataset.chk]; commit(); return; }
       const i = e.target.closest('[data-inv]'); if (i) return openInvoice(S().invoices.find((q) => q.id === i.dataset.inv));
