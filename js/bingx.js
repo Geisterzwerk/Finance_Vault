@@ -39,7 +39,7 @@ export function parseFile(text, name = '') {
   if (!acct) return null;
   const h = p.headers.map((x) => x.toLowerCase().trim());
   const ix = (...names) => h.findIndex((x) => names.includes(x));
-  const iT = h.findIndex((x) => x.startsWith('time(')), tz = tzFromHeader(h[iT]), iType = ix('type'), iAmt = ix('amount'),
+  const iT = h.findIndex((x) => x.startsWith('time(')), tz = tzFromHeader(p.headers[iT]), iType = ix('type'), iAmt = ix('amount'),
     iBal = ix('newavailableamount', 'new_available_amount'), iAsset = ix('assets', 'asset_name'), iRem = ix('remark', 'details');
   const rows = [];
   for (const r of p.rows) {
@@ -52,11 +52,23 @@ export function parseFile(text, name = '') {
   return { acct, name, rows, header: p.headers };
 }
 
-// Zeitzone aus der Kopfzeile, z. B. "Time(UTC+8)" -> +480 Minuten. null = unbekannt (Gerätezeit).
+// Zeitzone aus der Kopfzeile: "Time(UTC+8)" -> +480 (Minuten),
+// "Time(Europe/Berlin)" -> 'Europe/Berlin' (mit Sommerzeit). null = unbekannt (Gerätezeit).
 function tzFromHeader(h) {
-  const m = /utc\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?/i.exec(h || '');
+  const inner = (/time\(([^)]+)\)/i.exec(h || '') || [])[1] || '';
+  const m = /utc\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?/i.exec(inner);
   if (m) return (m[1] === '-' ? -1 : 1) * (+m[2] * 60 + +(m[3] || 0));
-  return /\(utc\)/i.test(h || '') ? 0 : null;
+  if (/^utc$/i.test(inner.trim())) return 0;
+  const zone = inner.trim();
+  if (/^[A-Za-z_]+\/[A-Za-z_\/+-]+$/.test(zone)) { try { new Intl.DateTimeFormat('en-US', { timeZone: zone }); return zone; } catch (e) { /* unbekannt */ } }
+  return null;
+}
+// Lokale Uhrzeit in einer IANA-Zeitzone -> UTC-Millisekunden
+function zonedUTC(y, mo, d, h, mi, se, zone) {
+  const f = new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const off = (ms) => { const p = Object.fromEntries(f.formatToParts(new Date(ms)).map((x) => [x.type, x.value])); return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - ms; };
+  const guess = Date.UTC(y, mo, d, h, mi, se);
+  return guess - off(guess - off(guess));
 }
 
 // Schlüssel OHNE Zeitzone, damit früher gespeicherte Rohzeilen weiter erkannt werden
@@ -77,7 +89,7 @@ export function mergeRaw(existing, incoming) {
 // ---------- Klassifizierung ----------
 function kind(r) {
   const t = r.type.toLowerCase();
-  if (/->|account transfer|internal|subscri|redeem|redemption/.test(t)) return 'internal';
+  if (/->|account transfer|internal|subscri|redeem|redemption|transfer (from|to) .*account|futures account/.test(t)) return 'internal';
   if (/withdraw/.test(t)) return 'withdraw';
   if (/deposit/.test(t)) return 'deposit';
   if (/rebate|reward|bonus|airdrop|interest|cashback|commission back|earn|yield|distribution/.test(t)) return 'reward';
@@ -90,7 +102,8 @@ function kind(r) {
 export function rowDate(r, offsetMs = 0) {
   const d = parseDate(r.ts); if (!d) return null;
   if (r.tz == null) return new Date(d.getTime() + offsetMs);
-  const utc = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()) - r.tz * 60e3;
+  const c = [d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()];
+  const utc = typeof r.tz === 'string' ? zonedUTC(...c, r.tz) : Date.UTC(...c) - r.tz * 60e3;
   return new Date(utc + offsetMs);
 }
 const short = (s) => (s && s.length > 10 ? '…' + s.slice(-6) : s || '');
@@ -134,6 +147,9 @@ export function analyse(rows) {
 
 // ---------- Ereignisse -> Transaktionen (mit CHF-Bewertung) ----------
 export async function build(rows, progress = () => {}) {
+  // Ausgeblendete Coins (z. B. VST = BingX-Demo-Guthaben) gar nicht erst verarbeiten
+  const hidden = new Set(S().settings.ignoredAssets || []);
+  rows = rows.filter((r) => !hidden.has(r.asset));
   const { events, balances, gaps } = analyse(rows);
   const wallet = S().settings.defaultWallet || 'Ledger';
   const txs = []; let seq = 0; let missingChf = 0;
@@ -174,7 +190,7 @@ export async function build(rows, progress = () => {}) {
           note: 'Bestand ohne Kaufhistorie (Kauf nicht im Export). Ältere Spot-Handelshistorie importieren oder Kauf ergänzen.' });
         stats.missingHistory[e.asset] = (stats.missingHistory[e.asset] || 0) + e.gap;
       } else {
-        push({ type: 'review', asset: e.asset, amount: -e.gap, chf: null, date: d, extId: id, raw: `Fehlende Abbuchung ${fmt(-e.gap)} ${e.asset} (${ACCT_LABEL[e.acct]})`,
+        push({ type: 'review', dir: 'out', asset: e.asset, amount: -e.gap, chf: null, date: d, extId: id, raw: `Fehlende Abbuchung ${fmt(-e.gap)} ${e.asset} (${ACCT_LABEL[e.acct]})`,
           note: 'Saldo im Export tiefer als erwartet: Verkauf, Gebühr oder Transfer?' });
         stats.review++;
       }
@@ -191,7 +207,7 @@ export async function build(rows, progress = () => {}) {
           push({ type: 'buy', asset: r.asset, amount: amt, chf: x != null ? +(amt * x).toFixed(2) : null, date: d, extId: id, note: 'Einzahlung Stablecoin (bewertet zum Tageskurs)' });
           if (x == null) missingChf++;
         } else {
-          push({ type: 'review', asset: r.asset, amount: amt, chf: null, date: d, extId: id, raw: `Einzahlung ${fmt(amt)} ${r.asset} von ${short(addr(r.remark))}`,
+          push({ type: 'review', dir: 'in', asset: r.asset, amount: amt, chf: null, date: d, extId: id, raw: `Einzahlung ${fmt(amt)} ${r.asset} von ${short(addr(r.remark))}`,
             note: 'Eigener Transfer (Kauf schon anderswo erfasst) oder Anfangsbestand?' });
           stats.review++;
         }
@@ -201,13 +217,15 @@ export async function build(rows, progress = () => {}) {
         stats.rewards++; break;
       case 'fee':
         if (r.amount < 0) push({ type: 'fee', asset: r.asset, amount: amt, chf: 0, date: d, extId: id, note: r.type });
-        else push({ type: 'review', asset: r.asset, amount: amt, chf: null, date: d, extId: id, raw: `${r.type} +${fmt(amt)} ${r.asset}` });
+        else push({ type: 'review', dir: 'in', asset: r.asset, amount: amt, chf: null, date: d, extId: id, raw: `${r.type} +${fmt(amt)} ${r.asset}` });
         break;
       default:
-        push({ type: 'review', asset: r.asset, amount: amt, chf: null, date: d, extId: id, raw: `${ACCT_LABEL[r.acct]}: ${r.type} ${r.amount > 0 ? '+' : ''}${fmt(r.amount)} ${r.asset}` });
+        push({ type: 'review', dir: r.amount > 0 ? 'in' : 'out', asset: r.asset, amount: amt, chf: null, date: d, extId: id, raw: `${ACCT_LABEL[r.acct]}: ${r.type} ${r.amount > 0 ? '+' : ''}${fmt(r.amount)} ${r.asset}` });
         stats.review++;
     }
   }
+  const gapDates = gaps.map((g) => g.ts).sort();
+  stats.gapFrom = gapDates[0] || null; stats.gapTo = gapDates[gapDates.length - 1] || null;
   const dates = rows.map((r) => r.ts).sort();
   const ms = rows.map((r) => rowDate(r)).filter(Boolean).map((d) => d.getTime());
   return { txs, balances, gaps, stats, missingChf, from: dates[0], to: dates[dates.length - 1], toMs: ms.length ? Math.max(...ms) : null };

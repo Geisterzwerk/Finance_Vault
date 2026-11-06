@@ -21,7 +21,8 @@ export const emptyState = () => ({
   prices: {},         // Symbol -> { chf, change24h, at }
   pricesAt: null,
   taxYears: {},       // Jahr -> { rates, checklist, closed, snapshot }
-  settings: { name: 'Jorick', cgKey: '', defaultWallet: 'Ledger', autoLockMin: 5, canton: 'Basel-Landschaft' },
+  // ignoredAssets: ausgeblendete Coins (Demo, Scam, Staub) – zählen nirgends mit. VST = BingX-Demo-Guthaben.
+  settings: { name: 'Jorick', cgKey: '', defaultWallet: 'Ledger', autoLockMin: 5, canton: 'Basel-Landschaft', ignoredAssets: ['VST'] },
 });
 
 let state = emptyState();

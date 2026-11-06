@@ -3,7 +3,7 @@
 // Jahresabschluss, Steuerzahlungen, Archiv und Prüfung
 // =====================================================================
 import { S, commit, uid } from './store.js';
-import { holdings, yearEndHoldings } from './calc.js';
+import { holdings, yearEndHoldings, reviewCount } from './calc.js';
 import { putFile, getFileURL, getFileBytes, deleteFile } from './vault.js';
 import * as LG from './ledger.js';
 import * as TP from './taxpack.js';
@@ -76,7 +76,7 @@ export function openResult(d, inboxDoc = null) {
 // =====================================================================
 export const ui = { docSearch: '' };
 export function inboxPage() {
-  const s = S(); const docs = s.documents.filter((d) => d.status === 'inbox'); const rc = s.transactions.filter((t) => t.type === 'review').length;
+  const s = S(); const docs = s.documents.filter((d) => d.status === 'inbox'); const rc = reviewCount();
   return {
     title: 'Finance Inbox', sub: 'Alles Neue landet zuerst hier',
     html: `<button class="btn gold block" data-act="scan">📷 Dokument scannen / hochladen</button>

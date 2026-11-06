@@ -12,6 +12,7 @@ export const TYPES = {
   reward: { l: 'Reward / Rebate', c: 'purple' },
   fee: { l: 'Gebühr', c: 'grey' },
   opening: { l: 'Anfangsbestand', c: 'teal' },
+  ignore: { l: 'Nicht relevant', c: 'grey' },
   review: { l: 'Bitte zuordnen', c: 'amber' },
 };
 
@@ -24,13 +25,16 @@ export const ACCOUNT_KINDS = {
 };
 
 const EPS = 1e-10;
+// Ausgeblendete Coins (Demo, Scam, Staub) zählen nirgends mit
+export const hiddenAssets = () => new Set(S().settings.ignoredAssets || []);
 
 // Holdings bis (inkl.) Stichtag berechnen
 export function holdings(until = null) {
   const s = S();
   const end = until ? new Date(until).getTime() : Infinity;
+  const hidden = hiddenAssets();
   const txs = s.transactions
-    .filter((t) => t.type !== 'review' && new Date(t.date).getTime() <= end)
+    .filter((t) => t.type !== 'review' && t.type !== 'ignore' && !hidden.has(t.asset) && new Date(t.date).getTime() <= end)
     .sort((a, b) => new Date(a.date) - new Date(b.date) || (a.seq || 0) - (b.seq || 0));
   const map = {};
   const h = (a) => (map[a] ||= {
@@ -47,13 +51,13 @@ export function holdings(until = null) {
     switch (t.type) {
       case 'buy':
         x.qty += amt; x.bought += amt;
-        if (chf == null) { x.unknownQty += amt; x.missingChf++; } else x.cost += chf + fee;
+        if (chf == null) { x.unknownQty += amt; x.missingChf++; } else { x.cost += chf + fee; if (t.estimate) x.estimated = true; }
         x.fees += fee;
         if (!x.lastLocation) x.lastLocation = t.platform;
         break;
       case 'opening':
         x.qty += amt;
-        if (chf == null) x.unknownQty += amt; else x.cost += chf;
+        if (chf == null) x.unknownQty += amt; else { x.cost += chf; if (t.estimate) x.estimated = true; }
         if (!x.lastLocation) x.lastLocation = t.platform;
         break;
       case 'reward':
@@ -180,5 +184,5 @@ export function checkMilestones() {
 }
 
 export const typeInfo = (t) => TYPES[t] || { l: String(t || '?'), c: 'grey' };
-export const reviewCount = () => S().transactions.filter((t) => t.type === 'review').length;
+export const reviewCount = () => { const h = hiddenAssets(); return S().transactions.filter((t) => t.type === 'review' && !h.has(t.asset)).length; };
 export const yearEndHoldings = (year) => holdings(new Date(year, 11, 31, 23, 59, 59).toISOString());

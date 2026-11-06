@@ -160,3 +160,4 @@ details summary { cursor: pointer; color: var(--gold); font-weight: 600; }
 
 .chip:focus-visible, .btn:focus-visible, .link:focus-visible, .tabbar a:focus-visible { outline: 2px solid var(--gold2); outline-offset: 2px; }
 .updatebar { position: fixed; left: 12px; right: 12px; top: calc(8px + var(--safe-t)); z-index: 450; border: 0; border-radius: 12px; padding: 12px 14px; background: var(--gold); color: var(--bg); font: inherit; font-weight: 700; box-shadow: 0 6px 24px rgba(0, 0, 0, .4); }
+.qbtns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }

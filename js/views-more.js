@@ -2,7 +2,8 @@
 // views-more.js – Steuern, Rechnungen, Vault (Import, Prüfen, Einstellungen)
 // =====================================================================
 import { S, commit, flush, uid, setState, demoState, defaultGoals } from './store.js';
-import { yearEndHoldings } from './calc.js';
+import { yearEndHoldings, reviewCount, hiddenAssets } from './calc.js';
+import { openEstimate } from './estimate.js';
 import { historicalCHF } from './prices.js';
 import { parseCSV, guessMapping, interpret, preview, toTransactions, ROLES } from './importer.js';
 import * as BX from './bingx.js';
@@ -254,7 +255,7 @@ export function vault(sub) {
     return `<span class="${d <= maxDays ? 'pos' : d <= maxDays * 2 ? 'amber' : 'neg'}">● Import ${ago(im.last)}${im.to ? ' · Daten bis ' + esc(im.to.slice(0, 10)) : ''}</span>`;
   };
   const others = Object.keys(s.imports).filter((k) => !['BingX', 'Relai'].includes(k));
-  const rc = s.transactions.filter((t) => t.type === 'review').length;
+  const rc = reviewCount();
   return {
     title: 'Vault', sub: 'Import-Zentrale · du lieferst Rohdaten, Finance Vault rechnet',
     html: `
@@ -315,7 +316,7 @@ function openBingx(files, ignored) {
           ${Object.entries(st.recurringSpent).map(([a, v]) => `<div class="small">Sparplan: ${qty(v)} ${esc(a)} investiert</div>`).join('')}
           <div class="small mt"><b>${result.txs.length}</b> Transaktionen, davon <b>${newTx}</b> neu${result.missingChf ? ` · <span class="amber">${result.missingChf} ohne CHF-Kurs (offline?)</span>` : ''}</div></div>
         ${miss.length ? `<div class="card"><div class="row">${icon('warn')}<b class="grow">Kaufhistorie fehlt</b></div>
-          <div class="small mut">Diese Coins kamen im Auszug vor, aber ihre Käufe nicht (älter als der Export oder nicht enthalten). Bestand stimmt, Ø-Preis bleibt offen.</div>
+          <div class="small mut">Diese Coins tauchen im Auszug auf, ihre Käufe stehen aber nicht drin${st.gapFrom ? ` (Lücken zwischen ${esc(String(st.gapFrom).slice(0, 10))} und ${esc(String(st.gapTo).slice(0, 10))})` : ''}. Gleichzeitig verschwinden Stablecoins ohne Verkauf – typisch für Käufe über «Convert»/Schnellkauf oder ältere Spot-Trades, die BingX im Kontoauszug nicht aufführt. Bestand stimmt trotzdem. Den Kaufpreis kannst du nach dem Übernehmen unter Invest schätzen lassen.</div>
           ${miss.map(([a, v]) => `<div class="txr"><b class="grow">${esc(a)}</b><span class="small">${qty(v)}</span></div>`).join('')}</div>` : ''}
         ${Object.keys(st.stableGaps).length ? `<div class="card small">${icon('warn')} Fehlende Stablecoin-Buchungen (Käufe ausserhalb des Exports): ${Object.entries(st.stableGaps).map(([a, v]) => `${qty(v)} ${esc(a)}`).join(', ')}. Wurde als Ausgleich verbucht.</div>` : ''}
         ${st.review ? `<div class="card small">${icon('warn')} ${st.review} Einträge zum Zuordnen (z. B. Einzahlungen von Coins). Du wirst danach gefragt.</div>` : ''}
@@ -341,6 +342,7 @@ function openBingx(files, ignored) {
         BX.apply(result);
         s.imports.BingX = { last: new Date().toISOString(), count: result.txs.length, to: result.to, toMs: result.toMs };
         commit(); closeAll(); toast('BingX übernommen'); dispatchEvent(new Event('refreshprices'));
+        if (Object.keys(result.stats.missingHistory).length) setTimeout(() => { location.hash = '#/invest'; }, 300);
       }
     }),
   });
@@ -418,13 +420,41 @@ function openImport(text, platform, fname) {
 }
 
 // ---------- Prüfen ----------
+// Ein-Tipp-Entscheide für die häufigsten Fälle; «Details» öffnet das volle Formular.
+const dirOf = (t) => t.dir || (/Fehlende Abbuchung|\s-\d/.test(t.raw || '') ? 'out' : 'in');
 function reviewPage() {
-  const list = S().transactions.filter((t) => t.type === 'review');
+  const h = hiddenAssets();
+  const list = S().transactions.filter((t) => t.type === 'review' && !h.has(t.asset)).sort((a, b) => new Date(a.date) - new Date(b.date));
+  const btns = (t) => (dirOf(t) === 'in'
+    ? `<button class="btn line sm" data-q="transfer">Eigener Transfer</button><button class="btn line sm" data-q="buyday">Kauf (Tageskurs ≈)</button><button class="btn line sm" data-q="opening">Anfangsbestand</button>`
+    : `<button class="btn line sm" data-q="transfer">Eigener Transfer</button><button class="btn line sm" data-q="sellday">Verkauf (Tageskurs ≈)</button><button class="btn line sm" data-q="fee">Gebühr</button>`)
+    + '<button class="btn line sm" data-q="ignore">Nicht relevant</button><button class="btn sm" data-q="details">Details …</button>';
   return {
-    title: 'Bitte zuordnen', sub: 'Lieber einmal fragen als falsch rechnen',
-    html: list.map((t) => `<div class="card clickable" data-tx="${t.id}">${icon('warn')} <b>${qty(t.amount)} ${esc(t.asset)}</b> <span class="small mut">${esc(t.platform)} · ${dmy(t.date)}</span>
-      <div class="small">${esc(t.raw || '')}</div><div class="small mut">${esc(t.note || '')}</div></div>`).join('') || '<div class="card">Alles zugeordnet 👍</div>',
-    bind: (el) => el.addEventListener('click', (e) => { const c = e.target.closest('[data-tx]'); if (c) openTx(S().transactions.find((q) => q.id === c.dataset.tx)); }),
+    title: 'Bitte zuordnen', sub: `${list.length} offen · lieber einmal fragen als falsch rechnen`,
+    html: (list.length ? `<div class="small mut">Eigener Transfer = Coins zwischen deinen eigenen Konten (Bestand bleibt). Tageskurs ≈ = mit dem CHF-Kurs dieses Tages, als geschätzt markiert. Nicht relevant = zählt nirgends (Demo, Scam, Staub).</div>` : '')
+      + (list.map((t) => `<div class="card clickable" data-tx="${t.id}"><div class="row">${icon('warn')}<b class="grow">${dirOf(t) === 'in' ? '+' : '−'}${qty(t.amount)} ${esc(t.asset)}</b><span class="small mut">${esc(t.platform)} · ${dmy(t.date)}</span></div>
+      <div class="small mt">${esc(t.raw || '')}</div><div class="small mut">${esc(t.note || '')}</div>
+      <div class="qbtns">${btns(t)}</div></div>`).join('') || '<div class="card">Alles zugeordnet 👍</div>'),
+    bind: (el) => el.addEventListener('click', async (e) => {
+      const q = e.target.closest('[data-q]');
+      if (!q) { const c = e.target.closest('[data-tx]'); if (c) openTx(S().transactions.find((x) => x.id === c.dataset.tx)); return; }
+      const t = S().transactions.find((x) => x.id === q.closest('[data-tx]').dataset.tx); if (!t) return;
+      const a = q.dataset.q;
+      if (a === 'details') return openTx(t);
+      const set = (o) => { Object.assign(t, o, { decided: true }); delete t.raw; delete t.suggest; };
+      if (a === 'transfer') set({ type: 'transfer', chf: 0, to: t.dir === 'out' ? (S().settings.defaultWallet || '') : (t.platform || '') });
+      if (a === 'opening') set({ type: 'opening', chf: null });
+      if (a === 'fee') set({ type: 'fee', chf: 0 });
+      if (a === 'ignore') set({ type: 'ignore', chf: null });
+      if (a === 'buyday' || a === 'sellday') {
+        if (!navigator.onLine) return toast('Offline – Kurs nicht abrufbar');
+        q.disabled = true; q.textContent = 'Lade Kurs …';
+        const r = await historicalCHF(t.asset, t.date).catch(() => null);
+        if (r == null) { toast(`Kein historischer Kurs für ${t.asset} gefunden – bitte unter Details eintragen`, 4000); q.disabled = false; q.textContent = a === 'buyday' ? 'Kauf (Tageskurs ≈)' : 'Verkauf (Tageskurs ≈)'; return; }
+        set({ type: a === 'buyday' ? 'buy' : 'sell', chf: +(r * t.amount).toFixed(2), estimate: 'day', note: 'Betrag geschätzt (Tageskurs)' + (t.note ? ' · ' + t.note : '') });
+      }
+      commit(); toast('Zugeordnet');
+    }),
   };
 }
 
@@ -480,6 +510,9 @@ function settingsPage() {
     <button class="btn line block" data-act="ics">📅 Erinnerungen in Kalender übernehmen</button>
     <div class="lbl mt">Sicherheit</div>
     <div class="grid2"><button class="btn line" data-act="pin">PIN ändern</button><button class="btn line" data-act="lock">Jetzt sperren</button></div>
+    <div class="lbl mt">Ausgeblendete Coins</div>
+    <div class="card small">${(s.ignoredAssets || []).length ? s.ignoredAssets.map((a) => `<div class="txr"><b class="grow">${esc(a)}</b><button class="btn line sm" data-unhide="${esc(a)}">Einblenden</button></div>`).join('') : '<span class="mut">Keine. Ausblenden im Coin-Detail (Invest › Coin).</span>'}
+      <div class="mut mt">Zählen nirgends mit: Demo-Guthaben (z. B. VST von BingX), Scam-Airdrops, Staub.</div></div>
     <div class="lbl mt">Daten</div>
     <div class="grid2"><button class="btn line" data-act="demo">Demo-Daten laden</button><button class="btn line" data-act="goals">Standard-Ziele</button></div>
     <button class="btn danger block mt" data-act="wipe">Alles löschen</button>
@@ -495,6 +528,8 @@ function settingsPage() {
         try { const text = await f.text(); openRestore(text, backupInfo(text)); } catch (err) { toast(err.message || 'Ungültiges Backup'); }
       });
       el.addEventListener('click', async (e) => {
+        const u = e.target.closest('[data-unhide]');
+        if (u) { s.ignoredAssets = (s.ignoredAssets || []).filter((x) => x !== u.dataset.unhide); commit(); toast(`${u.dataset.unhide} wieder eingeblendet`); return; }
         const b = e.target.closest('button[data-act]'); if (!b) return;
         const a = b.dataset.act;
         if (a === 'backup') openBackup();

@@ -5,6 +5,7 @@ import { S, commit, uid, deleteTx } from './store.js';
 import { TYPES, ACCOUNT_KINDS, portfolio, netWorth, holdings, goalProgress, reviewCount, typeInfo } from './calc.js';
 import { coinId } from './prices.js';
 import { closingDue } from './taxpack.js';
+import { openEstimate, missingOpenings } from './estimate.js';
 import {
   esc, chf, qty, price, pct, cls, dmy, dmyShort, hm, ago, daysUntil, greeting, longDate, bar, icon,
   openSheet, closeSheet, toast, chips, chipVal, bindChips, confetti,
@@ -18,7 +19,7 @@ export function openInvoicesSummary() {
   const open = S().invoices.filter((i) => i.status === 'open');
   return { open, sum: open.reduce((a, i) => a + (+i.amount || 0), 0), over: open.filter((i) => i.due && daysUntil(i.due) < 0).length };
 }
-const avgCell = (x) => (x.avg != null ? `<span class="mut">${price(x.avg)}</span>` : x.avgKnown != null ? `<span class="amber">≈ ${price(x.avgKnown)}</span>` : '<span class="amber">fehlt</span>');
+const avgCell = (x) => (x.avg != null ? (x.estimated ? `<span class="amber" title="geschätzt">≈ ${price(x.avg)}</span>` : `<span class="mut">${price(x.avg)}</span>`) : x.avgKnown != null ? `<span class="amber">≈ ${price(x.avgKnown)}</span>` : '<span class="amber">fehlt</span>');
 
 // =====================================================================
 // ÜBERSICHT
@@ -88,6 +89,7 @@ export function invest() {
       <div class="right"><div class="b ${cls(pf.unreal)}">${chf(pf.unreal, 0, true)}</div><div class="small ${cls(pf.unreal)}">${pct(pf.unrealPct)}</div></div></div>
       <div class="small mut">Unrealisiert nur für Coins mit vollständiger Kaufhistorie · Realisiert ${chf(pf.realized, 0, true)}${pf.realizedUnknown ? ' <span class="amber">(teilweise unbekannt)</span>' : ''}</div>
       ${pf.missingPrice ? `<div class="small amber">${pf.missingPrice} Coin${pf.missingPrice > 1 ? 's' : ''} ohne Kurs – nicht im Total enthalten</div>` : ''}</div>
+      ${missingOpenings().length ? `<div class="card row clickable goldb" data-act="estimate">${icon('warn')}<div class="grow"><b>Kaufpreise fehlen (${missingOpenings().length})</b><div class="small mut">Käufe stehen nicht im Export. Mit historischem Kurs schätzen?</div></div><span class="gold">›</span></div>` : ''}
       <div class="thead"><span>Coin</span><span>Ø Kauf</span><span>Wert / P/L</span></div>
       ${pf.held.map((x) => `<div class="coin clickable" data-coin="${esc(x.asset)}">
         <div class="cic">${esc(x.asset[0])}</div><div class="grow"><b>${esc(x.asset)}</b><div class="small mut">${qty(x.qty)}</div></div>
@@ -95,7 +97,7 @@ export function invest() {
         <div class="right"><b>${x.value != null ? chf(x.value) : '–'}</b><div class="small ${x.quality === 'missing' ? 'amber' : cls(x.unrealPct)}">${x.quality === 'missing' ? 'Historie fehlt' : pct(x.unrealPct)}</div></div></div>`).join('')
         || '<div class="card mut">Noch keine Crypto-Transaktionen. Importiere sie unter Vault.</div>'}
       ${done.length ? `<div class="lbl mt">Komplett verkauft</div>${done.map((x) => `<div class="coin clickable" data-coin="${esc(x.asset)}"><div class="cic">${esc(x.asset[0])}</div><b class="grow">${esc(x.asset)}</b><div class="right ${x.realizedUnknown ? 'amber' : cls(x.realized)}">${x.realizedUnknown ? 'Gewinn unbekannt' : chf(x.realized, 0, true)}</div></div>`).join('')}` : ''}
-      <div class="small mut mt">≈ = Ø-Preis nur des Teils mit bekannter Kaufhistorie.</div>
+      <div class="small mut mt">≈ = Ø-Preis geschätzt oder nur für den Teil mit bekannter Kaufhistorie.${S().settings.ignoredAssets?.length ? ` Ausgeblendet: ${esc(S().settings.ignoredAssets.join(', '))}.` : ''}</div>
       <button class="btn line block mt" data-act="addtx">＋ Transaktion manuell erfassen</button>`;
   } else if (t === 'konten') {
     body = `<div class="card hero"><div class="lbl">Ohne Crypto</div><div class="serif huge">${chf(nw.cash + nw.securities + nw.pillar3a - nw.liability)}</div></div>
@@ -121,6 +123,7 @@ export function invest() {
       const b = e.target.closest('[data-act]'); if (!b) return;
       if (b.dataset.act === 'addacc') openAccount();
       if (b.dataset.act === 'addtx') openTx();
+      if (b.dataset.act === 'estimate') openEstimate();
       if (b.dataset.act === 'refresh') dispatchEvent(new Event('refreshprices'));
     }),
   };
@@ -141,25 +144,32 @@ export function openCoin(sym) {
         <div class="grid2"><div><div class="small mut">Wert</div><b>${chf(x.value)}</b></div><div><div class="small mut">Kurs ${p ? `<span class="pos">● ${Date.now() - new Date(p.at) < 15 * 60e3 ? 'LIVE' : dmyShort(p.at)}</span>` : ''}</div><b>${price(x.price)}</b></div></div>
         <div class="small mt ${x.quality === 'ok' ? 'pos' : 'amber'}">Datenqualität: ${x.quality === 'ok' ? 'vollständig' : x.quality === 'check' ? 'prüfen (CHF-Wert fehlt bei einzelnen Transaktionen)' : `Kaufhistorie fehlt für ${((x.unknownShare || 0) * 100).toFixed(0)} % des Bestands`}</div></div>
       <div class="grid2">
-        <div class="card"><div class="lbl">Ø Kaufpreis</div><div class="serif big2">${x.avg != null ? price(x.avg) : 'nicht verfügbar'}</div>
+        <div class="card"><div class="lbl">Ø Kaufpreis</div><div class="serif big2 ${x.estimated ? 'amber' : ''}">${x.avg != null ? (x.estimated ? '≈ ' : '') + price(x.avg) : 'nicht verfügbar'}</div>${x.estimated ? '<div class="small amber">teilweise geschätzt</div>' : ''}
           ${x.avgKnown != null ? `<div class="small amber">≈ ${price(x.avgKnown)} für den bekannten Teil</div>` : ''}<div class="small mut">Investiert (bekannt)</div><b>${chf(x.cost)}</b></div>
         <div class="card"><div class="lbl">Unrealisiert</div><div class="serif big2 ${cls(x.unreal)}">${chf(x.unreal, 0, true)}</div><div class="small mut">Performance</div><b class="${cls(x.unrealPct)}">${pct(x.unrealPct)}</b></div>
       </div>
       <div class="card row"><div class="grow"><div class="small mut">Realisierter Gewinn</div><b class="${x.realizedUnknown ? 'amber' : cls(x.realized)}">${x.realizedUnknown ? 'teilweise unbekannt' : chf(x.realized, 2, true)}</b></div><div class="right"><div class="small mut">Gebühren</div><b>${chf(x.fees, 2)}</b></div></div>
-      ${x.quality === 'missing' ? `<div class="note amber">Für einen Teil des Bestands fehlt die Kaufhistorie (Anfangsbestand ohne Preis). Importiere die ältere Handelshistorie oder trage den Kaufpreis im Anfangsbestand nach. Es wird kein Ø-Preis erfunden.</div>` : ''}
+      ${x.quality === 'missing' ? `<div class="note amber">Für einen Teil des Bestands fehlt die Kaufhistorie (Anfangsbestand ohne Preis). Trag den echten Kaufbetrag im Anfangsbestand nach oder lass ihn schätzen. Ohne deine Zustimmung wird kein Ø-Preis erfunden.<button class="btn line sm mt" data-act="estimate">Kaufpreis schätzen …</button></div>` : ''}
       <div class="lbl mt">Transaktionen (${txs.length})</div>
       ${txs.slice(0, 200).map((t) => `<div class="txr clickable" data-tx="${t.id}"><i class="dotc ${typeInfo(t.type).c}"></i><div class="grow"><b>${esc(typeInfo(t.type).l)}</b><div class="small mut">${dmyShort(t.date)} · ${esc(t.platform || '')}${t.to ? ' › ' + esc(t.to) : ''}</div></div>
-        <div class="right"><b>${t.type === 'sell' || t.type === 'fee' ? '-' : t.type === 'transfer' ? '' : '+'}${qty(t.amount)}</b><div class="small mut">${t.type === 'transfer' ? (t.feeQty ? 'Gebühr ' + qty(t.feeQty) : 'kein Kauf') : t.type === 'reward' ? 'Kosten 0' : t.chf != null ? chf(t.chf, 2) : 'CHF fehlt'}</div></div></div>`).join('')}
+        <div class="right"><b>${t.type === 'sell' || t.type === 'fee' ? '-' : t.type === 'transfer' ? '' : '+'}${qty(t.amount)}</b><div class="small ${t.estimate ? 'amber' : 'mut'}">${t.type === 'transfer' ? (t.feeQty ? 'Gebühr ' + qty(t.feeQty) : 'kein Kauf') : t.type === 'reward' ? 'Kosten 0' : t.type === 'ignore' ? 'zählt nicht' : t.chf != null ? (t.estimate ? '≈ ' : '') + chf(t.chf, 2) : 'CHF fehlt'}</div></div></div>`).join('')}
       <div class="lbl mt">Einstellungen</div>
       <label class="field"><span>CoinGecko-ID (für Kurse)</span><input name="cgid" value="${esc(coinId(sym) || '')}" placeholder="z. B. kaspa"></label>
       <label class="field"><span>Liegt auf (Verwahrung)</span><input name="loc" value="${esc((s.coins[sym] || {}).location || '')}" placeholder="${esc(x.location || 'z. B. Ledger')}"></label>
       <button class="btn line block" data-act="save">Speichern</button>
-      <button class="btn gold block" data-act="add">＋ Transaktion für ${esc(sym)}</button>`;
+      <button class="btn gold block" data-act="add">＋ Transaktion für ${esc(sym)}</button>
+      <button class="btn danger block" data-act="hide">Coin ausblenden (Demo, Scam, Staub)</button>
+      <div class="small mut center">Ausgeblendete Coins zählen nirgends mit – nicht im Vermögen, nicht in der Steuer. Rückgängig unter Vault › Einstellungen.</div>`;
     },
     bind: (el) => el.addEventListener('click', (e) => {
       const t = e.target.closest('[data-tx]'); if (t) return openTx(S().transactions.find((q) => q.id === t.dataset.tx));
       const b = e.target.closest('[data-act]'); if (!b) return;
       if (b.dataset.act === 'add') openTx(null, sym);
+      if (b.dataset.act === 'estimate') openEstimate();
+      if (b.dataset.act === 'hide' && confirm(`${sym} ausblenden? Er zählt dann nirgends mehr mit (Vermögen, Steuer, Zuordnen). Die Buchungen bleiben gespeichert.`)) {
+        const st = S().settings; st.ignoredAssets = [...new Set([...(st.ignoredAssets || []), sym])];
+        commit(); closeSheet(); toast(`${sym} ausgeblendet`);
+      }
       if (b.dataset.act === 'save') {
         const s = S(); s.coins[sym] = { ...(s.coins[sym] || {}), id: el.querySelector('[name=cgid]').value.trim(), location: el.querySelector('[name=loc]').value.trim() };
         commit(); toast('Gespeichert'); dispatchEvent(new Event('refreshprices'));
@@ -202,6 +212,7 @@ export function openTx(tx = null, sym = '') {
         sell: 'Verkauf: bucht zum Ø-Preis aus, Differenz = realisierter Gewinn/Verlust.',
         transfer: 'Transfer zwischen eigenen Konten: Bestand und Ø-Preis bleiben gleich (nur die Netzwerkgebühr verlässt den Bestand).',
         reward: 'Reward/Rebate: Kostenbasis CHF 0, falls kein Betrag angegeben.',
+        ignore: 'Nicht relevant: zählt nirgends mit (Demo-Guthaben, Scam-Airdrop, Staub). Ganzen Coin ausblenden: im Coin-Detail.',
         fee: 'Gebühr in Coins: Bestand sinkt, Kostenbasis bleibt.',
         opening: 'Anfangsbestand: ohne CHF-Betrag bleibt der Ø-Preis offen. Mit Kaufbetrag wird er vollständig.',
       };
@@ -226,7 +237,7 @@ export function openTx(tx = null, sym = '') {
         if (type === 'transfer') { o.chf = 0; o.to = v('to'); o.feeQty = feeQty || 0; if (o.feeQty >= amount) return toast('Gebühr grösser als Menge?'); }
         if (type === 'reward' && o.chf == null) o.chf = 0;
         if (type === 'fee') o.fee = 0;
-        if (tx) { const live = s.transactions.find((q) => q.id === tx.id); if (live) { Object.assign(live, o, { decided: true }); delete live.raw; delete live.suggest; } }
+        if (tx) { const live = s.transactions.find((q) => q.id === tx.id); if (live) { if (live.estimate && o.chf !== live.chf) delete live.estimate; Object.assign(live, o, { decided: true }); delete live.raw; delete live.suggest; } }
         else s.transactions.push({ id: uid(), extId: '', note: '', ...o });
         commit(); toast('Gespeichert'); closeSheet();
       });

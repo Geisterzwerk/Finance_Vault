@@ -33,7 +33,8 @@ export function yearEndCheck(y) {
     const t = s.ledger.last ? new Date(s.ledger.last.at).getTime() : 0;
     items.push({ label: 'Ledger-Abgleich', ok: t > end - 14 * 864e5, warn: t <= end - 14 * 864e5, detail: t ? String(s.ledger.last.at).slice(0, 10) : 'nie', fix: '#/vault/ledger' });
   }
-  const review = s.transactions.filter((x) => x.type === 'review' && new Date(x.date).getTime() <= end).length;
+  const hidden = new Set(s.settings.ignoredAssets || []);
+  const review = s.transactions.filter((x) => x.type === 'review' && !hidden.has(x.asset) && new Date(x.date).getTime() <= end).length;
   items.push({ label: 'Offene Zuordnungen', ok: !review, warn: !!review, detail: review ? `${review} offen` : 'keine', fix: '#/vault/pruefen' });
   const hold = Object.values(yearEndHoldings(y)).filter((x) => x.qty > 1e-8);
   const rates = (s.taxYears[y] || {}).rates || {};

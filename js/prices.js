@@ -82,8 +82,31 @@ function dailySeries(id) {
   return series[id];
 }
 
+// ---------- USD/CHF (EZB-Referenzkurs via Frankfurter, ohne Schlüssel) ----------
+// Für Stablecoins (USDT, USDC …) gilt 1 Stablecoin ≈ 1 USD. Der EZB-Kurs ist
+// offiziell, kostenlos und hat – anders als CoinGecko gratis – keine 1-Jahres-Grenze.
+const FX = 'https://api.frankfurter.dev/v1';
+const fxYears = {};
+function fxYear(y) {
+  if (!fxYears[y]) {
+    fxYears[y] = getJSON(`${FX}/${y}-01-01..${y}-12-31?base=USD&symbols=CHF`)
+      .then((j) => Object.entries(j.rates || {}).map(([d, r]) => [d, r.CHF]).filter(([, v]) => v > 0).sort())
+      .catch(() => { delete fxYears[y]; return []; });
+  }
+  return fxYears[y];
+}
+export async function usdChf(date) {
+  const d = new Date(date); const day = d.toISOString().slice(0, 10);
+  let list = await fxYear(d.getUTCFullYear());
+  if (!list.length || list[0][0] > day) list = [...(await fxYear(d.getUTCFullYear() - 1)), ...list];
+  let best = null;
+  for (const [k, v] of list) { if (k <= day) best = v; else break; } // letzter Handelstag vor/an dem Datum
+  return best;
+}
+
 export async function historicalCHF(sym, date) {
   if (sym === 'CHF') return 1;
+  if (STABLE_USD.includes(sym)) { const fx = await usdChf(date).catch(() => null); if (fx != null) return fx; }
   const id = coinId(STABLE_USD.includes(sym) && !KNOWN[sym] ? 'USDT' : sym) || (await resolveId(sym));
   if (!id) return null;
   const t = new Date(date).getTime();
