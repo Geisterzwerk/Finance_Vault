@@ -18,6 +18,8 @@ const erc20 = async (url, token, addr, dec) => {
   return hexToNum(r.result, dec);
 };
 const ETH_RPC = 'https://ethereum-rpc.publicnode.com';
+const SUI_GQL = 'https://graphql.mainnet.sui.io/graphql';
+const SEI_EVM = ['https://evm-rpc.sei-apis.com', 'https://sei-evm-rpc.publicnode.com'];
 
 export const CHAINS = {
   btc: {
@@ -71,7 +73,18 @@ export const CHAINS = {
   },
   sui: {
     label: 'Sui (SUI)', hint: 'Adresse 0x… (Sui)',
-    async fetch(a) { const r = await rpc('https://fullnode.mainnet.sui.io', 'suix_getBalance', [a]); return { SUI: Number(r.result.totalBalance) / 1e9 }; },
+    // Öffentliche Fullnodes haben JSON-RPC abgeschaltet -> GraphQL, sonst Ausweich-RPC
+    async fetch(a) {
+      try {
+        const r = await j(SUI_GQL, { query: 'query($a: SuiAddress!) { address(address: $a) { balance(coinType: "0x2::sui::SUI") { totalBalance } } }', variables: { a } });
+        if (r.errors) throw new Error(r.errors[0].message);
+        return { SUI: Number((r.data.address && r.data.address.balance && r.data.address.balance.totalBalance) || 0) / 1e9 };
+      } catch (e) {
+        const r = await rpc('https://sui-rpc.publicnode.com', 'suix_getBalance', [a]);
+        if (!r.result) throw e;
+        return { SUI: Number(r.result.totalBalance) / 1e9 };
+      }
+    },
   },
   near: {
     label: 'NEAR', hint: 'Konto-ID oder 64-stellige Adresse',
@@ -85,8 +98,12 @@ export const CHAINS = {
     async fetch(a) { const r = await j(`https://api.kaspa.org/addresses/${encodeURIComponent(a)}/balance`); return { KAS: Number(r.balance) / 1e8 }; },
   },
   sei: {
-    label: 'Sei (SEI)', hint: 'Adresse sei1…',
+    label: 'Sei (SEI)', hint: 'Adresse sei1… oder 0x…',
     async fetch(a) {
+      if (/^0x[0-9a-fA-F]{40}$/.test(a)) { // EVM-Adresse -> Sei-EVM
+        for (const u of SEI_EVM) { const r = await rpc(u, 'eth_getBalance', [a, 'latest']).catch(() => null); if (r && r.result) return { SEI: hexToNum(r.result, 18) }; }
+        throw new Error('Sei-EVM nicht erreichbar');
+      }
       const r = await j(`https://rest.sei-apis.com/cosmos/bank/v1beta1/balances/${encodeURIComponent(a)}`);
       const b = (r.balances || []).find((x) => x.denom === 'usei');
       return { SEI: b ? Number(b.amount) / 1e6 : 0 };

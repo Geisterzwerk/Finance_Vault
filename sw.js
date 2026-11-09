@@ -9,7 +9,7 @@
 // VERSION bei jedem Release erhöhen (dann wird der Offline-Cache sauber neu
 // aufgebaut). Updates kommen aber auch ohne Erhöhung an.
 // =====================================================================
-const VERSION = 'fv-v2.10.0';
+const VERSION = 'fv-v2.10.1';
 const VENDOR = 'fv-vendor-v1';
 const FILES = ['./', './index.html', './manifest.webmanifest', './css/style.css',
   './js/app.js', './js/version.js', './js/vault.js', './js/store.js', './js/calc.js', './js/prices.js', './js/importer.js', './js/bingx.js',

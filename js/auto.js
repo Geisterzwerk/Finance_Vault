@@ -41,7 +41,7 @@ const J = async (url, body) => {
   } finally { clearTimeout(t); }
 };
 const rpc = (url, method, params) => J(url, { jsonrpc: '2.0', id: 1, method, params }).then((j) => j.result);
-const EVM = ['https://ethereum-rpc.publicnode.com', 'https://api.avax.network/ext/bc/C/rpc', 'https://rpc.hyperliquid.xyz/evm'];
+const EVM = ['https://ethereum-rpc.publicnode.com', 'https://api.avax.network/ext/bc/C/rpc', 'https://rpc.hyperliquid.xyz/evm', 'https://evm-rpc.sei-apis.com'];
 
 export async function senders(coin, txid) {
   const id = String(txid || '').trim(); if (!id) return [];
@@ -57,7 +57,13 @@ export async function senders(coin, txid) {
       return [];
     }
     if (/^[1-9A-HJ-NP-Za-km-z]{43,90}$/.test(id)) {
-      if (coin === 'SUI') { const t = await rpc('https://fullnode.mainnet.sui.io', 'sui_getTransactionBlock', [id, { showInput: true }]); return t && t.transaction ? [t.transaction.data.sender] : []; }
+      if (coin === 'SUI') {
+        const r = await J('https://graphql.mainnet.sui.io/graphql', { query: 'query($d: String!) { transaction(digest: $d) { sender { address } } }', variables: { d: id } }).catch(() => null);
+        const s = r && r.data && r.data.transaction && r.data.transaction.sender;
+        if (s && s.address) return [s.address];
+        const t = await rpc('https://sui-rpc.publicnode.com', 'sui_getTransactionBlock', [id, { showInput: true }]).catch(() => null);
+        return t && t.transaction ? [t.transaction.data.sender] : [];
+      }
       if (coin === 'SOL' || id.length > 60) { const t = await rpc('https://api.mainnet-beta.solana.com', 'getTransaction', [id, { maxSupportedTransactionVersion: 0, encoding: 'json' }]); const k = t && t.transaction && t.transaction.message.accountKeys; return k ? [typeof k[0] === 'string' ? k[0] : k[0].pubkey] : []; }
     }
   } catch (e) { /* offline oder unbekannt -> keine Aussage */ }
